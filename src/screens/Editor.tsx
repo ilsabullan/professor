@@ -10,6 +10,7 @@ import {
   Eraser,
   Highlighter,
   LayoutGrid,
+  Minus,
   PenLine,
   Redo2,
   Trash,
@@ -104,6 +105,7 @@ export function Editor({
   const [highlightColor, setHighlightColor] = useState(HIGHLIGHT_COLORS[0]);
   const [penSize, setPenSize] = useState(1);
   const [highlightSize, setHighlightSize] = useState(1);
+  const [straightHighlight, setStraightHighlight] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [showOverview, setShowOverview] = useState(false);
   const [showPageMenu, setShowPageMenu] = useState(false);
@@ -669,6 +671,18 @@ export function Editor({
             <span style={{ width: 4 + i * 3, height: 4 + i * 3 }} />
           </button>
         ))}
+        <span className="tool-divider" />
+        {/* 형광펜 직선 그리기 (굿노트의 "직선으로 그리기"). 형광펜일 때만 바꿀 수 있다 */}
+        <button
+          className={`toggle-btn${straightHighlight ? " active" : ""}`}
+          aria-pressed={straightHighlight}
+          disabled={tool !== "highlighter"}
+          onPointerDown={() => setStraightHighlight((v) => !v)}
+          onClick={(e) => e.detail === 0 && setStraightHighlight((v) => !v)} // 키보드로 누를 때만 (손·마우스는 위에서 처리)
+        >
+          <Minus size={18} strokeWidth={2.25} />
+          직선
+        </button>
       </div>
 
       <div className="stage-area">
@@ -693,6 +707,7 @@ export function Editor({
                 tool={tool}
                 color={color}
                 strokeWidth={sizes[sizeIndex]}
+              straightHighlight={straightHighlight}
                 clock={clock}
                 onStroke={(s) => {
                   setPageStrokes(s.pageId, [...(strokes.current[s.pageId] ?? EMPTY), s], true);

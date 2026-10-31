@@ -555,8 +555,31 @@ button:disabled {
 }
 
 .tool-bar .swatch:disabled,
-.tool-bar .size:disabled {
+.tool-bar .size:disabled,
+.tool-bar .toggle-btn:disabled {
   opacity: 0.35;
+}
+
+/* 형광펜 직선 그리기 켜고 끄기 */
+.toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 17px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--secondary);
+}
+
+.toggle-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.toggle-btn:not(:disabled):active {
+  background-color: var(--press);
 }
 
 .size {

@@ -11,6 +11,18 @@ const ERASER_RADIUS = 10; // 화면 기준 px
 const MAX_PIXELS = 5_000_000;
 // 손떨림 보정: 새 점을 이전 점 쪽으로 이만큼 끌어당긴다 (0이면 보정 없음). 최소한만 건다
 const STABILIZE = 0.3;
+const SNAP_DEGREES = 6; // 직선 형광펜이 이 각도 안이면 수평·수직으로 맞춘다
+
+/** 직선 형광펜: 시작점과 지금 점만 남긴다. 거의 수평·수직이면 반듯하게 맞춘다 */
+function straightLine(start: Point, end: Point, cssWidth: number, cssHeight: number): Point[] {
+  const dx = (end.x - start.x) * cssWidth;
+  const dy = (end.y - start.y) * cssHeight;
+  const angle = Math.abs((Math.atan2(dy, dx) * 180) / Math.PI);
+  const p = { ...end };
+  if (Math.min(angle, 180 - angle) < SNAP_DEGREES) p.y = start.y;
+  else if (Math.abs(angle - 90) < SNAP_DEGREES) p.x = start.x;
+  return [start, p];
+}
 const PDF_RERENDER_DELAY = 150; // 확대·이동이 끝나고 이만큼 지난 뒤에 PDF를 새 크기로 다시 그린다
 const REGION_MARGIN = 96; // 필기 층을 보이는 영역보다 이만큼 넓게 그려서, 조금 움직일 때는 다시 그리지 않는다
 
@@ -25,7 +37,7 @@ export function pagePixelWidth(page: Page, cssWidth: number): number {
 }
 
 type Gesture =
-  | { kind: "ink"; pointerId: number; stroke: Stroke }
+  | { kind: "ink"; pointerId: number; stroke: Stroke; straight: boolean }
   | { kind: "erase"; pointerId: number; at: Point }
   | { kind: "laser"; pointerId: number };
 
@@ -37,6 +49,7 @@ type Props = {
   tool: Tool;
   color: string;
   strokeWidth: number;
+  straightHighlight: boolean;
   clock: () => number;
   onStroke: (stroke: Stroke) => void;
   onEraseStart: () => void;
@@ -269,12 +282,13 @@ export function PageCanvas(props: Props) {
     e.currentTarget.setPointerCapture(ev.pointerId);
 
     const p = toPoint(ev);
-    const { tool, color, strokeWidth, onEraseStart } = latest.current;
+    const { tool, color, strokeWidth, straightHighlight, onEraseStart } = latest.current;
     if (tool === "pen" || tool === "highlighter") {
       gesture.current = {
         kind: "ink",
         pointerId: ev.pointerId,
         stroke: { id: uid(), pageId: page.id, tool, color, width: strokeWidth, points: [p], startedAt: p.t, endedAt: p.t },
+        straight: tool === "highlighter" && straightHighlight,
       };
     } else if (tool === "eraser") {
       onEraseStart();
@@ -294,7 +308,9 @@ export function PageCanvas(props: Props) {
     const coalesced = ev.getCoalescedEvents?.();
     for (const ce of coalesced?.length ? coalesced : [ev]) {
       const p = toPoint(ce);
-      if (g.kind === "ink") {
+      if (g.kind === "ink" && g.straight) {
+        g.stroke.points = straightLine(g.stroke.points[0], p, latest.current.cssWidth, pageHeight());
+      } else if (g.kind === "ink") {
         const prev = g.stroke.points[g.stroke.points.length - 1];
         p.x = Math.round((p.x + (prev.x - p.x) * STABILIZE) * 1e5) / 1e5;
         p.y = Math.round((p.y + (prev.y - p.y) * STABILIZE) * 1e5) / 1e5;
@@ -316,7 +332,8 @@ export function PageCanvas(props: Props) {
       // 보정으로 끝이 덜 따라온 만큼 펜을 뗀 자리까지 이어서 끝낸다
       const end = toPoint(e.nativeEvent);
       const last = g.stroke.points[g.stroke.points.length - 1];
-      if (g.stroke.points.length > 1 && (end.x !== last.x || end.y !== last.y)) g.stroke.points.push(end);
+      if (g.straight) g.stroke.points = straightLine(g.stroke.points[0], end, latest.current.cssWidth, pageHeight());
+      else if (g.stroke.points.length > 1 && (end.x !== last.x || end.y !== last.y)) g.stroke.points.push(end);
       g.stroke.endedAt = g.stroke.points[g.stroke.points.length - 1].t;
       latest.current.onStroke(g.stroke);
     } else if (g.kind === "erase") {
