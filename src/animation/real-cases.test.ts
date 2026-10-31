@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, groundSpeech, measureTranslation, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -27,6 +27,76 @@ describe('최신 실측 회귀', () => {
     for (const [id, read] of Object.entries({ o7: '5', o8: '3', o9: '8', o10: '1', o11: '3', o16: '3', o18: '1' })) b.get(id)!.read = read
     expect(['o11', 'o16', 'o18'].map((id) => b.underlineOf(id))).toEqual(['o7', 'o8', 'o10'])
     expect(b.values().filter((o) => o.read).map((o) => o.read)).toEqual(['5', '3', '8', '1'])
+  })
+
+  it('02:40 실측: "3번째, 4번째 꺼 8과 1을 비교"는 읽지 못한 낙서를 칸으로 세지 않고 8·1을 잡는다', () => {
+    const b = boardFor(fixture('real-sort-024015'))
+    for (const [id, read] of Object.entries({ o7: '3', o8: '5', o9: '8', o10: '1' })) b.get(id)!.read = read
+    const text = '그다음에 이제 3번째, 4번째 꺼 8과 1을 비교해 볼게요. 8과 일 중에 누가 더 크죠?'
+    const compare = groundSpeech(b, text.split(/그\s*다음(?:에)?/).at(-1)!, [], 'compare', 'preview')
+    expect(compare.targets.sort()).toEqual(['o10', 'o9'])
+    expect(groundSpeech(b, '그러면 둘이 자리밖에 바뀔 거예요', compare.targets, 'swap', 'final')).toMatchObject({ move: true })
+  })
+
+  it('05:04 실측: 연달아 찍은 입자 점을 손글씨 하나로 합치지 않는다', () => {
+    const c = fixture('real-states-050404')
+    const b = boardFor(c)
+    const particles = ['s8', 's9', 's10', 's11', 's13', 's15', 's16', 's20', 's21', 's24', 's30', 's31']
+    const owners = new Set(particles.map((sid) => b.objs.find((o) => o.strokes.some((st) => st.id === sid))!.id))
+    expect(owners.size).toBe(particles.length)
+    expect(Math.max(...b.objs.map((o) => o.strokes.length))).toBeLessThan(6)
+  })
+
+  it('08:28 실측: "오른쪽으로" 말했는데 왼쪽으로 민 그래프 이동을 오른쪽으로 바로잡는다', () => {
+    const b = new Board()
+    for (const input of fixture('real-graph-082838').inputs.filter((i) => i.type === 'ink' && i.n <= 93)) b.apply(input.event!)
+    // 실측 AI 응답 그대로 (n=210, 271, 289, 334)
+    const real: [string, [number, number], number][] = [
+      ['y는 x 마이너스 2의 제곱 . 오른쪽으로 이만큼 옮기면', [-16, 0], 1],
+      ['오른쪽으로 이만큼 더 이동해요', [-16, 0], 1],
+      ['왼쪽으로 이만큼 더 이동해요', [-64, 0], -1],
+      ['오른쪽으로 8만큼 더 이동해요', [-192, 0], 1],
+    ]
+    for (const [text, by, dir] of real) {
+      const ops = alignDirection([{ v: 'move', id: 'o9', by, dur: 900 }], text)
+      const g = groundSpeech(b, text, [], 'a', 'final')
+      expect(rejectUngrounded(ops, g, b)).toBeNull()
+      expect(Math.sign((ops[0] as { by: [number, number] }).by[0])).toBe(dir)
+      expect(Math.abs((ops[0] as { by: [number, number] }).by[0])).toBe(Math.abs(by[0]))
+    }
+    // 방향을 말하지 않았거나 둘 다 말하면 그대로 둔다
+    const same: Op[] = [{ v: 'move', id: 'o9', by: [-40, 0], dur: 900 }]
+    expect(alignDirection(same, '이만큼 옮기면')).toBe(same)
+    expect(alignDirection(same, '오른쪽이 아니라 왼쪽으로')).toEqual(same)
+  })
+
+  it('08:14 실측: 좌표평면에 그린 이동량 화살표에 흐름을 붙이지 않는다', () => {
+    const c = fixture('real-graph-081421')
+    const b = new Board()
+    let arrow: ReturnType<Board['apply']> = null
+    // 마지막 좌표평면(n 1870~)을 그리고 이동량 화살표(n 1937)를 그은 순간까지
+    for (const input of c.inputs.filter((i) => i.type === 'ink' && i.n <= 1937)) {
+      const ev = b.apply(input.event!)
+      if (ev?.kind === '화살표') arrow = ev
+    }
+    expect(arrow?.kind).toBe('화살표')
+    expect(b.axes().size).toBeGreaterThan(0)
+    expect(quickFromBoard(arrow!, b)).toEqual([])
+  })
+
+  it('08:28 실측: "오른쪽으로 이만큼"은 방금 그린 60px 이동량 화살표만큼 민다', () => {
+    // 화살표 머리를 그은 순간까지 (사례 끝에서는 칠판을 지웠다)
+    const b = new Board()
+    for (const input of fixture('real-graph-082838').inputs.filter((i) => i.type === 'ink' && i.n <= 93)) b.apply(input.event!)
+    const arrow = b.objs.find((o) => o.arrowEnd)!
+    const now = arrow.t + 5000
+    const move = (by: [number, number]): Op[] => [{ v: 'move', id: 'o9', by, dur: 900 }]
+    const right = measureTranslation(alignDirection(move([-16, 0]), '오른쪽으로 이만큼 옮기면'), '오른쪽으로 이만큼 옮기면', b, now)
+    expect((right[0] as { by: number[] }).by).toEqual([60, 0])
+    const left = measureTranslation(move([-64, 0]), '왼쪽으로 이만큼 더 이동해요', b, now)
+    expect((left[0] as { by: number[] }).by).toEqual([-60, 0])
+    // 숫자로 말한 양("8만큼")은 AI 값을 그대로 둔다
+    expect(measureTranslation(move([192, 0]), '오른쪽으로 8만큼 더 이동해요', b, now)).toEqual(move([192, 0]))
   })
 
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {

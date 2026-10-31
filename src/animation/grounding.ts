@@ -53,8 +53,12 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   })
   const ordered = [...values].sort((a, b) => (engine?.settled(a.id)?.x ?? a.bbox.x) - (engine?.settled(b.id)?.x ?? b.bbox.x))
   const ordinals = [...actionText.matchAll(/(\d+)\s*번째|첫\s*번째|두\s*번째/g)].map((m) => m[1] ? Number(m[1]) : m[0].startsWith('첫') ? 1 : 2)
-  if (ordinals.length) {
-    named = ordinals.flatMap((n) => ordered[n - 1] ? [ordered[n - 1].id] : [])
+  // 서수는 값이 있는 칸만 센다. 말한 숫자가 모두 특정되면 숫자를 믿는다
+  // (실측 024015: "3번째, 4번째 꺼 8과 1을"에서 읽지 못한 낙서까지 칸으로 세어 엉뚱한 쌍을 잡았다)
+  const cells = ordered.filter((o) => o.read ?? o.text)
+  const row = cells.length >= Math.max(0, ...ordinals) ? cells : ordered
+  if (ordinals.length && !(named.length >= 2 && named.length === mentions.length)) {
+    named = ordinals.flatMap((n) => row[n - 1] ? [row[n - 1].id] : [])
   }
   const compare = /(비교|비유|더\s*크|더\s*작)/.test(actionText)
   const freshFocus = focus.filter((id) => values.some((o) => o.id === id))
@@ -68,15 +72,17 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   const move = !negated && (sort || MOVE.test(actionText))
   if (/버블|인접/.test(board.page.text ?? '')) {
     // "앞에 있는 값을 먼저 비교"는 처음 두 칸. 읽은 값과 일치할 때만 해석한다.
-    if (/앞에.{0,25}먼저\s*비교/.test(actionText) && named.length === 1 && ordered.slice(0, 2).some((o) => o.id === named[0])) {
-      targets = ordered.slice(0, 2).map((o) => o.id)
+    const line = cells.length >= 2 ? cells : ordered
+    if (/앞에.{0,25}먼저\s*비교/.test(actionText) && named.length === 1 && line.slice(0, 2).some((o) => o.id === named[0])) {
+      targets = line.slice(0, 2).map((o) => o.id)
     }
-    const directional = actionText.match(/(\d+|[영일이삼사오육칠팔구])(?:이|가|을|를)?\s*(뒤로|앞으로)/)
+    // 숫자 뒤 '일'은 조사 '이'를 잘못 받아쓴 것이다 (실측 bent-frame: "8일 뒤로 가겠죠"를 1이 뒤로 가는 말로 읽음)
+    const directional = actionText.match(/(\d+|[영일이삼사오육칠팔구])(?:이|가|을|를|(?<=\d)일)?\s*(뒤로|앞으로)/)
     const subject = directional ? values.filter((o) => (o.read ?? o.text) === (numberWords[directional[1]] ?? directional[1])) : []
     const solo = subject.length === 1 ? subject[0].id : targets.length === 1 ? targets[0] : undefined
     if (move && solo && /뒤로|앞으로/.test(actionText)) {
-      const index = ordered.findIndex((o) => o.id === solo)
-      const other = ordered[index + (/뒤로/.test(actionText) ? 1 : -1)]
+      const index = line.findIndex((o) => o.id === solo)
+      const other = index < 0 ? undefined : line[index + (/뒤로/.test(actionText) ? 1 : -1)]
       targets = other ? [solo, other.id] : []
     }
   }
@@ -111,6 +117,48 @@ export function planNumericSwap(board: Board, engine: Engine, g: Grounding): { o
  * strict: 지금 규칙 전부 / words: 이동·흐름·멈춤 단어 목록 검사를 끔 / minimal: 숫자 규칙과 구조 검사만
  */
 export type GateMode = 'strict' | 'words' | 'minimal'
+
+/** 말한 방향: 오른쪽 +1, 왼쪽 -1 (가로), 아래 +1, 위 -1 (세로). 둘 다 말하거나 안 말하면 0 */
+function spokenDirection(text: string): [number, number] {
+  const sign = (pos: boolean, neg: boolean) => pos === neg ? 0 : pos ? 1 : -1
+  return [sign(/오른쪽/.test(text), /왼쪽/.test(text)), sign(/아래\s*(?:로|쪽)|밑으로/.test(text), /위\s*(?:로|쪽)/.test(text))]
+}
+
+/**
+ * 말한 방향과 반대 부호인 by를 말한 방향으로 바로잡는다. 크기는 그대로 둔다.
+ * 실측 082838: "오른쪽으로 8만큼"에 by [-192,0]처럼 매번 왼쪽으로 밀었다 (y=(x-2)²의 '마이너스'에 끌림)
+ */
+export function alignDirection(ops: Op[], text: string): Op[] {
+  const [dx, dy] = spokenDirection(text)
+  if (!dx && !dy) return ops
+  return ops.map((op) => {
+    if (op.v !== 'move' || !op.by) return op
+    const [bx, by] = op.by
+    const x = dx && Math.sign(bx) === -dx ? -bx : bx
+    const y = dy && Math.sign(by) === -dy ? -by : by
+    return x === bx && y === by ? op : { ...op, by: [x, y] as [number, number] }
+  })
+}
+
+/**
+ * "오른쪽으로 이만큼"의 이만큼은 방금 그린 이동량 화살표다. 그 화살표의 가로(세로) 변위로 by를 정한다.
+ * 실측 082838: 60px 화살표를 그리고 "오른쪽으로 이만큼"이라 했는데 by [-16,0]으로 거의 안 움직였다.
+ */
+export function measureTranslation(ops: Op[], text: string, board: Board, now: number): Op[] {
+  if (!/[이요그]\s*만큼|이\s*정도/.test(text)) return ops
+  const [dx, dy] = spokenDirection(text)
+  if (!dx && !dy) return ops
+  const axes = board.axes()
+  const arrow = board.objs
+    .filter((o) => o.kind === 'line' && o.arrowEnd && o.pts && o.pts.length >= 2 && !axes.has(o.id) && now - o.t < 120000)
+    .sort((a, b) => b.t - a.t)[0]
+  if (!arrow?.pts) return ops
+  const [a, z] = [arrow.pts[0], arrow.pts[arrow.pts.length - 1]]
+  const vx = Math.abs(z.x - a.x), vy = Math.abs(z.y - a.y)
+  const by: [number, number] = [dx ? dx * Math.round(vx) : 0, dy ? dy * Math.round(vy) : 0]
+  if (Math.hypot(...by) < 20) return ops
+  return ops.map((op) => op.v === 'move' && op.by && op.id !== arrow.id ? { ...op, by } : op)
+}
 
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
