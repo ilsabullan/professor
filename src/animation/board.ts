@@ -165,6 +165,13 @@ function edgeShare(pts: Pt[], b: Box) {
  * 획 하나의 모양 판별.
  * 크기보다 "곧은가, 닫혔는가, 모서리가 있는가"를 본다. 크게 쓴 숫자도 구불구불하면 손글씨(mark).
  */
+/** 점이나 톡 찍은 짧은 획 (입자 표시). 표본 수가 적고 작다 */
+function isTap(pts: Pt[], s = 1) {
+  const b = bboxOf(pts)
+  const diag = Math.hypot(b.w, b.h)
+  return diag < 14 * s || (pts.length <= 6 && diag < 32 * s)
+}
+
 export function classify(pts: Pt[], s = 1): Exclude<ObjKind, 'text'> {
   const L = pathLen(pts)
   const b = bboxOf(pts)
@@ -538,7 +545,10 @@ export class Board {
 
     // ③ 손글씨는 이어 쓴 가까운 획끼리 하나로 묶는다 (여러 획으로 쓴 숫자·글자)
     const last = this.objs[this.objs.length - 1]
-    if (last && kind !== 'box' && diag < 160 * sc && t - last.t < 1200) {
+    // 연달아 찍은 점·짧은 탭은 입자처럼 하나씩 둔다 (실측 050404: 상태 변화 교안의 입자 25개가 손글씨 하나로 합쳐짐)
+    // i·j·!처럼 글자 획 옆에 찍은 점은 앞 객체에 탭이 아닌 획이 있으므로 그대로 묶는다
+    const particle = isTap(pts, sc) && !!last && last.strokes.every((st) => isTap(st.pts, sc))
+    if (last && !particle && kind !== 'box' && diag < 160 * sc && t - last.t < 1200) {
       const lastDiag = Math.hypot(last.bbox.w, last.bbox.h)
       const joinable = last.kind === 'mark' || last.kind === 'dot' || (last.kind === 'line' && !last.arrowEnd && lastDiag < 120 * sc)
       const nb = unionBox(last.bbox, b)
@@ -563,7 +573,7 @@ export class Board {
     if (k === 'mark' || k === 'dot') {
       const area = Math.max(1, b.w * b.h)
       const host = this.objs.find((o) => {
-        if (o.kind !== 'mark') return false
+        if (o.kind !== 'mark' || (isTap(pts, sc) && o.strokes.every((st) => isTap(st.pts, sc)))) return false
         const iw = Math.min(o.bbox.x + o.bbox.w, b.x + b.w) - Math.max(o.bbox.x, b.x)
         const ih = Math.min(o.bbox.y + o.bbox.h, b.y + b.h) - Math.max(o.bbox.y, b.y)
         return iw > 0 && ih > 0 && iw * ih >= 0.5 * area

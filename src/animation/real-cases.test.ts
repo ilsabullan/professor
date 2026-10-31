@@ -38,6 +38,15 @@ describe('최신 실측 회귀', () => {
     expect(groundSpeech(b, '그러면 둘이 자리밖에 바뀔 거예요', compare.targets, 'swap', 'final')).toMatchObject({ move: true })
   })
 
+  it('05:04 실측: 연달아 찍은 입자 점을 손글씨 하나로 합치지 않는다', () => {
+    const c = fixture('real-states-050404')
+    const b = boardFor(c)
+    const particles = ['s8', 's9', 's10', 's11', 's13', 's15', 's16', 's20', 's21', 's24', 's30', 's31']
+    const owners = new Set(particles.map((sid) => b.objs.find((o) => o.strokes.some((st) => st.id === sid))!.id))
+    expect(owners.size).toBe(particles.length)
+    expect(Math.max(...b.objs.map((o) => o.strokes.length))).toBeLessThan(6)
+  })
+
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {
     const b = boardFor(fixture('real-sort-012918'))
     expect(b.underlineOf('o16')).toBe('o9')
