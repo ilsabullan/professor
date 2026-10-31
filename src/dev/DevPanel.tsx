@@ -60,9 +60,11 @@ export function DevPanel({
               </option>
             ))}
           </select>
-          <button className="btn sm" onClick={() => void drawExample(board, lesson.id)}>
-            ✏️ 예시 그림
-          </button>
+          {lesson.example && (
+            <button className="btn sm" onClick={() => void drawExample(board, lesson.id)}>
+              ✏️ 예시 그림
+            </button>
+          )}
           <button className="btn sm" onClick={() => examplePointing(board, 330, 300, 950, 300)}>
             👉 예시 가리키기
           </button>
