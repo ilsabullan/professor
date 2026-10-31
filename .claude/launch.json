@@ -4,15 +4,40 @@
     {
       "name": "professor-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5173",
+        "--strictPort"
+      ],
       "port": 5173,
       "url": "https://localhost:5173"
     },
     {
       "name": "professor-dev-http",
       "runtimeExecutable": "env",
-      "runtimeArgs": ["DEV_HTTP=1", "npm", "run", "dev", "--", "--port", "5174", "--strictPort"],
+      "runtimeArgs": [
+        "DEV_HTTP=1",
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
       "port": 5174
+    },
+    {
+      "name": "professor-move-http",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/hurdoo/coding/worktrees/ilsabullan-professor-move && DEV_HTTP=1 npm run dev -- --port 5175 --strictPort"
+      ],
+      "port": 5175
     }
   ]
 }
