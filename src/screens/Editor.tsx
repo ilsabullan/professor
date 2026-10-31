@@ -10,7 +10,6 @@ import {
   Eraser,
   Highlighter,
   LayoutGrid,
-  Minus,
   PenLine,
   Redo2,
   Trash,
@@ -29,6 +28,7 @@ import { IconButton } from "../components/IconButton";
 import { Menu } from "../components/Menu";
 import { ConfirmDialog } from "../components/Dialog";
 import { TitleEditor } from "../components/TitleEditor";
+import { HighlighterOptions } from "../components/HighlighterOptions";
 import { renameLecture } from "../lib/titles";
 
 const ICON = { size: 22, strokeWidth: 1.75 };
@@ -105,7 +105,8 @@ export function Editor({
   const [highlightColor, setHighlightColor] = useState(HIGHLIGHT_COLORS[0]);
   const [penSize, setPenSize] = useState(1);
   const [highlightSize, setHighlightSize] = useState(1);
-  const [straightHighlight, setStraightHighlight] = useState(true);
+  const [straightHighlight, setStraightHighlight] = useState(false);
+  const [showHighlightOptions, setShowHighlightOptions] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [showOverview, setShowOverview] = useState(false);
   const [showPageMenu, setShowPageMenu] = useState(false);
@@ -633,18 +634,31 @@ export function Editor({
       </header>
 
       <div className="tool-bar">
-        {TOOLS.map((t) => (
-          // 누르는 순간 바로 바뀌도록 click보다 먼저 오는 pointerdown에서 고른다
-          <IconButton
-            key={t.id}
-            label={t.label}
-            active={tool === t.id}
-            onPointerDown={() => selectTool(t.id)}
-            onClick={() => selectTool(t.id)}
-          >
-            {t.icon}
-          </IconButton>
-        ))}
+        {TOOLS.map((t) => {
+          // 굿노트처럼 이미 고른 형광펜을 한 번 더 누르면 설정 창을 연다
+          const press = () => (t.id === "highlighter" && tool === "highlighter" ? setShowHighlightOptions(true) : selectTool(t.id));
+          return (
+            <div key={t.id} className="menu-anchor">
+              {/* 누르는 순간 바로 바뀌도록 click보다 먼저 오는 pointerdown에서 고른다 (click은 키보드로 누를 때만) */}
+              <IconButton
+                label={t.id === "highlighter" && tool === "highlighter" ? "형광펜 설정" : t.label}
+                active={tool === t.id}
+                onPointerDown={press}
+                onClick={(e) => e.detail === 0 && press()}
+              >
+                {t.icon}
+                {t.id === "highlighter" && tool === "highlighter" && <span className="tool-options-hint" />}
+              </IconButton>
+              {t.id === "highlighter" && showHighlightOptions && (
+                <HighlighterOptions
+                  straight={straightHighlight}
+                  onStraightChange={setStraightHighlight}
+                  onClose={() => setShowHighlightOptions(false)}
+                />
+              )}
+            </div>
+          );
+        })}
         <span className="tool-divider" />
         {colors.map((c) => (
           <button
@@ -671,18 +685,6 @@ export function Editor({
             <span style={{ width: 4 + i * 3, height: 4 + i * 3 }} />
           </button>
         ))}
-        <span className="tool-divider" />
-        {/* 형광펜 직선 그리기 (굿노트의 "직선으로 그리기"). 형광펜일 때만 바꿀 수 있다 */}
-        <button
-          className={`toggle-btn${straightHighlight ? " active" : ""}`}
-          aria-pressed={straightHighlight}
-          disabled={tool !== "highlighter"}
-          onPointerDown={() => setStraightHighlight((v) => !v)}
-          onClick={(e) => e.detail === 0 && setStraightHighlight((v) => !v)} // 키보드로 누를 때만 (손·마우스는 위에서 처리)
-        >
-          <Minus size={18} strokeWidth={2.25} />
-          직선
-        </button>
       </div>
 
       <div className="stage-area">
