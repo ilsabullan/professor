@@ -414,6 +414,14 @@ export class Pipeline {
       this.firedRules.clear()
       return
     }
+    // 어미만 따로 확정된 조각은 앞 문장의 끝이다. 새 실행 단위로 앞 요청을 취소하지 않는다
+    // (실측 083151: "위에 C가 쌓여" 뒤의 "요"가 스택 요청을 취소함)
+    const last = this.utter.at(-1)
+    if (last && tEnd - last.t < 4000 && /^(?:요|죠|네요|어요|에요|예요|다)[.?!]*$/.test(final)) {
+      last.text += final
+      this.firedRules.clear()
+      return
+    }
     // 미완성 발화는 강조만 했다. 확정 발화는 한 개의 새로운 실행 단위다.
     clearTimeout(this.timer)
     this.pending = null

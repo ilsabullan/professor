@@ -168,6 +168,18 @@ describe('말한 직후 필기 (실측 043036, 050404)', () => {
   })
 })
 
+describe('어미만 따로 확정된 조각 (실측 083151)', () => {
+  it('"요"만 확정되어도 앞 문장의 요청을 취소하지 않고 앞 문장에 붙인다', async () => {
+    const { p } = setup()
+    const r = await say(p, '5와 3을 옮겨')
+    const n = requests.length
+    await say(p, '요')
+    expect(r.signal.aborted).toBe(false)
+    expect(requests.length).toBe(n)
+    expect(p.utter.at(-1)?.text).toBe('5와 3을 옮겨요')
+  })
+})
+
 describe('04시 실측: 쪼개진 받아쓰기', () => {
   it('"서로 바꿔요"가 두 조각에 연달아 들어와도 3과 1을 한 번만 바꾼다 (logs 042636)', async () => {
     const { p } = setup()

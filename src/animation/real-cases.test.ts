@@ -69,6 +69,20 @@ describe('최신 실측 회귀', () => {
     expect(alignDirection(same, '오른쪽이 아니라 왼쪽으로')).toEqual(same)
   })
 
+  it('08:14 실측: 좌표평면에 그린 이동량 화살표에 흐름을 붙이지 않는다', () => {
+    const c = fixture('real-graph-081421')
+    const b = new Board()
+    let arrow: ReturnType<Board['apply']> = null
+    // 마지막 좌표평면(n 1870~)을 그리고 이동량 화살표(n 1937)를 그은 순간까지
+    for (const input of c.inputs.filter((i) => i.type === 'ink' && i.n <= 1937)) {
+      const ev = b.apply(input.event!)
+      if (ev?.kind === '화살표') arrow = ev
+    }
+    expect(arrow?.kind).toBe('화살표')
+    expect(b.axes().size).toBeGreaterThan(0)
+    expect(quickFromBoard(arrow!, b)).toEqual([])
+  })
+
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {
     const b = boardFor(fixture('real-sort-012918'))
     expect(b.underlineOf('o16')).toBe('o9')
