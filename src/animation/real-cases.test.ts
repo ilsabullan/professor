@@ -126,3 +126,43 @@ describe('04시 실측 회귀', () => {
     expect(b.values().map((o) => o.read)).toEqual(['5', '3', '8', '1'])
   })
 })
+
+describe('막는 규칙 강도 (04:19 지구 공전 실측)', () => {
+  // logs/20261101-041959-k1lc n=951: 말하는 중 "반대편으로 가도 축을 같은 방향이에요 그래서 지구가 돌면서 여름에서 겨울로"
+  const text = '반대편으로 가도 축을 같은 방향이에요 그래서 지구가 돌면서 여름에서 겨울로'
+  const orbit: Op[] = [sanitizeOp({ v: 'move', id: 'o1', along: 'o8', loop: true, dur: 4000 })!]
+  const setupEarth = () => {
+    const b = boardAt(fixture('real-earth-041959'), 951)
+    return { b, g: groundSpeech(b, text, [], 'earth', 'preview') }
+  }
+
+  it('엄격·단어 목록 끔: 말하는 중에는 궤도 이동을 막는다', () => {
+    const { b, g } = setupEarth()
+    expect(rejectUngrounded(orbit, g, b, 'strict')).toBe('말이 아직 확정되지 않음')
+    expect(rejectUngrounded(orbit, g, b, 'words')).toBe('말이 아직 확정되지 않음')
+  })
+
+  it('최소: 말하는 중이라도 궤도 이동을 허용하고 엔진도 실행할 수 있다', () => {
+    const { b, g } = setupEarth()
+    expect(rejectUngrounded(orbit, g, b, 'minimal')).toBeNull()
+    expect(new Engine(b, () => {}).validateStep(orbit)).toBeNull()
+  })
+
+  it('단어 목록 끔: 확정 발화에 이동 단어("돌면서")가 없어도 막지 않는다', () => {
+    const { b } = setupEarth()
+    const g = groundSpeech(b, text, [], 'earth', 'final')
+    expect(g.move).toBe(false)
+    expect(rejectUngrounded(orbit, g, b, 'strict')).toBe('이동을 지시한 입력이 없음')
+    expect(rejectUngrounded(orbit, g, b, 'words')).toBeNull()
+  })
+
+  it('최소에서도 숫자 규칙(지금 말한 대상만 이동)은 남는다', () => {
+    const c = fixture('real-sort-013822')
+    const b = boardFor(c)
+    for (const [id, read] of Object.entries({ o7: '5', o8: '3', o9: '8', o10: '1' })) b.get(id)!.read = read
+    const compare = groundSpeech(b, '팔 과일을 비유했을 때 누가 더 크죠?', [], 'compare', 'final')
+    const g = groundSpeech(b, '그럼 둘이 바뀌겠죠?', compare.targets, 'swap', 'final')
+    const raw = c.failures.find((f) => f.n === 132)!.request!.raw
+    expect(rejectUngrounded(opsOf(raw), g, b, 'minimal')).toBe('지금 말한 비교/이동 대상과 다름')
+  })
+})

@@ -144,6 +144,14 @@ export function DevPanel({
               <option value="gemini">Gemini Live</option>
             </select>
           </label>
+          <label className="opt" title="AI가 낸 동작을 코드가 막는 정도">
+            막는 규칙
+            <select value={s.gate} onChange={(e) => p.update({ gate: e.target.value as typeof s.gate })}>
+              <option value="strict">엄격 (지금)</option>
+              <option value="words">단어 목록 끔</option>
+              <option value="minimal">최소 (숫자 규칙만)</option>
+            </select>
+          </label>
         </div>
         <div className="row">
           <label className="opt">

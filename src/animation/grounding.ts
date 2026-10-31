@@ -91,12 +91,20 @@ export function planNumericSwap(board: Board, engine: Engine, g: Grounding): { o
 }
 
 /** 모델의 캡션 대신 확정된 입력을 근거로 상태를 바꾸는 동작을 허용한다. */
-export function rejectUngrounded(ops: Op[], g: Grounding, board: Board): string | null {
+/**
+ * 막는 규칙의 강도 (실측 비교용).
+ * strict: 지금 규칙 전부 / words: 이동·흐름·멈춤 단어 목록 검사를 끔 / minimal: 숫자 규칙과 구조 검사만
+ */
+export type GateMode = 'strict' | 'words' | 'minimal'
+
+export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
-  if (g.phase === 'preview' && ops.some((op) => op.v !== 'pulse' && op.v !== 'color')) return '말이 아직 확정되지 않음'
+  const strict = mode === 'strict'
+  const minimal = mode === 'minimal'
+  if (!minimal && g.phase === 'preview' && ops.some((op) => op.v !== 'pulse' && op.v !== 'color')) return '말이 아직 확정되지 않음'
   const moves = ops.filter((op) => op.v === 'move')
   if (moves.length) {
-    if (!g.move) return '이동을 지시한 입력이 없음'
+    if (strict && !g.move) return '이동을 지시한 입력이 없음'
     if (moves.some((op) => board.underlineOf(op.id) || (typeof op.to === 'string' && board.underlineOf(op.to)))) return '밑줄은 이동할 값이 아님'
     const numeric = board.values().filter((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))
     const movedNumbers = moves.filter((op) => numeric.some((o) => o.id === op.id))
@@ -114,10 +122,11 @@ export function rejectUngrounded(ops: Op[], g: Grounding, board: Board): string 
       }
     }
   }
-  if (ops.some((op) => op.v === 'flow' && (!g.flow || !board.isFlowPath(op.along)))) return '흐름의 근거 또는 연결 경로가 없음'
-  if (g.phase === 'ink' && ops.some((op) => op.v === 'flow' && !g.targets.includes(op.along))) return '지금 그린 경로와 다름'
-  if (ops.some((op) => op.v === 'stop') && !g.stop) return '흐름을 멈추라는 입력이 없음'
-  if (g.phase === 'ink' && ops.some((op) => !['pulse', 'color', 'flow'].includes(op.v))) return '필기만으로 다음 과정을 실행할 수 없음'
+  // AI가 만든 화살표(p…)가 경로인지는 엔진이 확인한다
+  if (ops.some((op) => op.v === 'flow' && ((strict && !g.flow) || (!op.along.startsWith('p') && !board.isFlowPath(op.along))))) return '흐름의 근거 또는 연결 경로가 없음'
+  if (!minimal && g.phase === 'ink' && ops.some((op) => op.v === 'flow' && !g.targets.includes(op.along))) return '지금 그린 경로와 다름'
+  if (strict && ops.some((op) => op.v === 'stop') && !g.stop) return '흐름을 멈추라는 입력이 없음'
+  if (!minimal && g.phase === 'ink' && ops.some((op) => !['pulse', 'color', 'flow'].includes(op.v))) return '필기만으로 다음 과정을 실행할 수 없음'
   return null
 }
 
@@ -138,6 +147,10 @@ export function planNumericSort(board: Board, engine: Engine, text: string): { o
   return { ops, cap: `${sorted.map((r) => r.v).join(', ')} 순서로 정렬` }
 }
 
-export function describeGrounding(g: Grounding) {
-  return `이번 입력의 실행 범위: ${g.phase === 'preview' ? '말하는 중: pulse/color만. 이동은 확정 후.' : g.phase === 'ink' ? '필기 해석과 강조만.' : '확정 발화.'}\n현재 특정된 대상: ${g.targets.join(', ') || '(미확정)'}\n이동 허용: ${g.move ? '예' : '아니오'}, 전체 정렬 요청: ${g.sort ? '예' : '아니오'}\n이 범위 밖의 대상이나 다음 비교를 추측하지 않는다.`
+export function describeGrounding(g: Grounding, mode: GateMode = 'strict') {
+  const scope = mode === 'minimal'
+    ? g.phase === 'preview' ? '말하는 중: 결과가 분명히 말해진 만큼은 움직여도 된다.' : g.phase === 'ink' ? '필기 해석. 교수자가 보여주려는 움직임이 분명하면 실행해도 된다.' : '확정 발화.'
+    : g.phase === 'preview' ? '말하는 중: pulse/color만. 이동은 확정 후.' : g.phase === 'ink' ? '필기 해석과 강조만.' : '확정 발화.'
+  const allow = mode === 'strict' ? `\n이동 허용: ${g.move ? '예' : '아니오'}` : ''
+  return `이번 입력의 실행 범위: ${scope}\n현재 특정된 대상: ${g.targets.join(', ') || '(미확정)'}${allow}, 전체 정렬 요청: ${g.sort ? '예' : '아니오'}\n이 범위 밖의 대상이나 다음 비교를 추측하지 않는다.`
 }

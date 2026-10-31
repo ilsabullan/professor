@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Board } from './board'
 import { Engine, Player, type PlayStep } from './engine'
+import { type Op, sanitizeOp } from './ops'
 
 /** 손글씨 두 개(o1 왼쪽, o2 오른쪽)를 둔 보드 */
 function setup() {
@@ -118,5 +119,53 @@ describe('발화 단위 실행', () => {
     p.tick(1000)
     expect(e.settled('o1')).toEqual({ x: 200, y: 300 })
     expect(captions).toEqual([])
+  })
+})
+
+describe('반복 이동과 화살표 만들기', () => {
+  const page = () => {
+    const b = new Board()
+    b.apply({ type: 'page', info: { page: 1, width: 1280, height: 720 } })
+    b.apply({ type: 'text', id: 'a', page: 1, text: '가계', x: 200, y: 300, t: 0 })
+    b.apply({ type: 'text', id: 'b', page: 1, text: '기업', x: 800, y: 300, t: 0 })
+    return b
+  }
+
+  it('AI가 만든 화살표는 흐름 경로로 쓸 수 있다', () => {
+    const e = new Engine(page(), () => {})
+    const ops = [sanitizeOp({ v: 'spawn', id: 'p1', shape: 'arrow', from: 'o1', to: 'o2', text: '노동' })!, sanitizeOp({ v: 'flow', along: 'p1' })!]
+    expect(e.validateStep(ops)).toBeNull()
+    e.beginStep()
+    ops.forEach((op) => e.applyOp(op, 0))
+    expect(e.flows.map((f) => f.along)).toEqual(['p1'])
+    const pts = e.linePts('p1')!
+    expect(pts[0].x).toBeLessThan(pts[1].x)
+  })
+
+  it('끝 객체가 없는 화살표는 만들지 않는다', () => {
+    const e = new Engine(page(), () => {})
+    expect(e.validateStep([sanitizeOp({ v: 'spawn', id: 'p1', shape: 'arrow', from: 'o1', to: 'o9' })!])).toBe('화살표 끝 객체가 없음')
+  })
+
+  it('loop 이동은 시간이 지나도 계속 돌고, stop id로 그 자리에 멈춘다', () => {
+    const e = new Engine(page(), () => {})
+    const ring: Op[] = [
+      sanitizeOp({ v: 'spawn', id: 'p1', shape: 'arrow', from: 'o1', to: 'o2' })!,
+      sanitizeOp({ v: 'spawn', id: 'p2', shape: 'dot', at: [300, 300] })!,
+    ]
+    e.beginStep()
+    ring.forEach((op) => e.applyOp(op, 0))
+    e.beginStep()
+    e.applyOp(sanitizeOp({ v: 'move', id: 'p2', along: 'p1', loop: true, dur: 2000 })!, 0)
+    const xs: number[] = []
+    for (let t = 0; t <= 6000; t += 500) { e.tick(t, 0.5); xs.push(Math.round(e.center('p2')!.x)) }
+    // 열린 경로라 왕복: 오른쪽 끝까지 갔다가 다시 돌아온다
+    expect(Math.max(...xs.slice(0, 6))).toBeGreaterThan(600)
+    expect(xs[6]).toBeLessThan(Math.max(...xs)) // 3초: 돌아오는 중
+    e.beginStep()
+    e.applyOp(sanitizeOp({ v: 'stop', id: 'p2' })!, 6000)
+    const stopped = e.center('p2')!.x
+    e.tick(7000, 1)
+    expect(e.center('p2')!.x).toBe(stopped)
   })
 })

@@ -3,12 +3,15 @@ import { clamp } from './geometry'
 /** AI(와 즉시 반응 규칙)가 쓰는 기본 동작 */
 export type Op =
   | { v: 'flow'; along: string; n: number; speed: number; color: string; rev: boolean }
-  | { v: 'stop'; along: string }
+  | { v: 'stop'; along?: string; id?: string }
   | {
       v: 'spawn'
       id: string
-      shape: 'dot' | 'circle' | 'box' | 'label'
+      shape: 'dot' | 'circle' | 'box' | 'label' | 'arrow'
       at?: [number, number]
+      /** arrow: 시작·끝 (객체 id 또는 좌표) */
+      from?: string | [number, number]
+      to?: string | [number, number]
       on?: string
       text: string
       color: string
@@ -18,7 +21,7 @@ export type Op =
       /** 이 시간(ms)이 지나면 흐려지며 사라짐 (즉시 반응 효과용) */
       life?: number
     }
-  | { v: 'move'; id: string; to?: [number, number] | string; along?: string; by?: [number, number]; dur: number }
+  | { v: 'move'; id: string; to?: [number, number] | string; along?: string; by?: [number, number]; dur: number; loop?: boolean }
   | { v: 'color'; id: string; color: string }
   | { v: 'scale'; id: string; k: number; dur: number }
   | { v: 'pulse'; id: string }
@@ -68,17 +71,22 @@ export function sanitizeOp(raw: unknown): Op | null {
       }
     }
     case 'stop': {
-      const along = str(o.along)
-      return along ? { v: 'stop', along } : null
+      const along = str(o.along) ?? undefined
+      const id = str(o.id) ?? undefined
+      return along || id ? { v: 'stop', along, id } : null
     }
     case 'spawn': {
       const id = str(o.id)
       if (!id) return null
-      const shape = o.shape === 'circle' || o.shape === 'box' || o.shape === 'label' ? o.shape : 'dot'
+      const shape = o.shape === 'circle' || o.shape === 'box' || o.shape === 'label' || o.shape === 'arrow' ? o.shape : 'dot'
+      const from = xy(o.from) ?? str(o.from) ?? undefined
+      const to = xy(o.to) ?? str(o.to) ?? undefined
+      if (shape === 'arrow' && (!from || !to)) return null
       return {
         v: 'spawn',
         id,
         shape,
+        ...(shape === 'arrow' ? { from, to } : {}),
         at: xy(o.at) ?? undefined,
         on: str(o.on) ?? undefined,
         text: typeof o.text === 'string' ? o.text.slice(0, 24) : '',
@@ -95,7 +103,9 @@ export function sanitizeOp(raw: unknown): Op | null {
       const along = str(o.along) ?? undefined
       const by = xy(o.by) ?? undefined
       if (!to && !along && !by) return null
-      return { v: 'move', id, to, along, by, dur: dur(o.dur) }
+      // 반복은 경로를 따라갈 때만. 한 바퀴는 조금 느리게
+      const loop = o.loop === true && !!along
+      return { v: 'move', id, to, along, by, dur: loop ? clamp(num(o.dur, 3000), 1200, 8000) : dur(o.dur), ...(loop ? { loop } : {}) }
     }
     case 'color': {
       const id = str(o.id)

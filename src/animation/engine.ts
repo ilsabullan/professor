@@ -1,5 +1,5 @@
 import type { Board, BoardObj } from './board'
-import { type Pt, boxCenter, clamp, pathLen, pointOnPath } from './geometry'
+import { type Pt, boxCenter, clamp, dist, pathLen, pointOnPath } from './geometry'
 import type { Op } from './ops'
 
 interface PathAnim {
@@ -7,6 +7,16 @@ interface PathAnim {
   t0: number
   dur: number
   base: Pt
+  /** 반복: 닫힌 경로는 계속 돌고(wrap), 열린 경로는 왕복(bounce). stop으로 멈춘다 */
+  loop?: 'wrap' | 'bounce'
+  /** 따라가는 선 id (stop along으로 멈출 때) */
+  along?: string
+}
+
+/** 끝점이 서로 가까우면 닫힌 경로(궤도·순환) */
+export function isClosedPath(pts: Pt[]) {
+  if (pts.length < 3) return false
+  return dist(pts[0], pts[pts.length - 1]) < Math.max(30, pathLen(pts) * 0.15)
 }
 
 interface AnimState {
@@ -29,7 +39,9 @@ interface AnimState {
 export const isEffectId = (id: string) => id.startsWith('q')
 
 interface Spawned {
-  shape: 'dot' | 'circle' | 'box' | 'label'
+  shape: 'dot' | 'circle' | 'box' | 'label' | 'arrow'
+  /** arrow: 페이지 좌표의 시작→끝 */
+  pts?: Pt[]
   x: number
   y: number
   r: number
@@ -151,8 +163,17 @@ export class Engine {
       const p = this.settled(id)
       if (p) positions.set(id, p)
     }
+    // 같은 단계에서 만든 화살표도 흐름 경로로 쓸 수 있다
+    const newPaths = new Set<string>()
     for (const op of ops) if (op.v === 'spawn') {
       if (positions.has(op.id)) return `이미 있는 객체 생성: ${op.id}`
+      if (op.shape === 'arrow') {
+        const ends = [op.from, op.to].map((e) => typeof e === 'string' ? positions.get(e) : e ? { x: e[0], y: e[1] } : undefined)
+        if (ends.some((e) => !e)) return '화살표 끝 객체가 없음'
+        positions.set(op.id, { x: (ends[0]!.x + ends[1]!.x) / 2, y: (ends[0]!.y + ends[1]!.y) / 2 })
+        newPaths.add(op.id)
+        continue
+      }
       const at = op.at ? { x: op.at[0], y: op.at[1] } : op.on ? positions.get(op.on) : { x: this.board.page.width / 2, y: this.board.page.height / 2 }
       if (!at) return '생성 위치가 없음'
       positions.set(op.id, at)
@@ -160,8 +181,8 @@ export class Engine {
     const goals = new Map(positions)
     const moved = new Set<string>()
     for (const op of ops) {
-      if ('id' in op && !positions.has(op.id)) return `없는 객체: ${op.id}`
-      if (op.v === 'flow' && !this.board.isFlowPath(op.along)) return '연결 경로가 아닌 선'
+      if ('id' in op && op.id && !positions.has(op.id)) return `없는 객체: ${op.id}`
+      if (op.v === 'flow' && !this.isPath(op.along) && !newPaths.has(op.along)) return '연결 경로가 아닌 선'
       if (op.v !== 'move') continue
       if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
       moved.add(op.id)
@@ -171,7 +192,9 @@ export class Engine {
       if (op.along === op.id) return `자기 자신을 따라 이동: ${op.id}`
       const path = op.along ? this.linePts(op.along) : null
       const at = positions.get(op.id)!
-      const to = op.along ? path?.at(-1) : op.by ? { x: at.x + op.by[0], y: at.y + op.by[1] } : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
+      if (op.loop && !path) return '유효한 도착지가 없음'
+      // 반복 이동은 결국 제자리로 돌아오므로 겹침 판단은 지금 자리 기준
+      const to = op.loop ? at : op.along ? path?.at(-1) : op.by ? { x: at.x + op.by[0], y: at.y + op.by[1] } : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
       if (!to || to.x < 0 || to.y < 0 || to.x > this.board.page.width || to.y > this.board.page.height) return '유효한 도착지가 없음'
       goals.set(op.id, to)
     }
@@ -248,7 +271,14 @@ export class Engine {
     return s ? { x: s.x, y: s.y } : null
   }
 
+  /** 흐름·이동 경로로 쓸 수 있는 선 (칠판의 연결선·화살표·궤적, 또는 AI가 만든 화살표) */
+  isPath(id: string) {
+    return this.board.isFlowPath(id) || this.spawned[id]?.shape === 'arrow'
+  }
+
   linePts(id: string): Pt[] | null {
+    const sp = this.spawned[id]
+    if (sp?.pts) return sp.pts
     const tr = this.board.traces.find((x) => x.id === id)
     if (tr) return tr.pts
     const o = this.board.get(id)
@@ -271,13 +301,34 @@ export class Engine {
         return 600
       }
       case 'stop':
-        this.flows = this.flows.filter((f) => f.along !== op.along)
+        if (op.along) this.flows = this.flows.filter((f) => f.along !== op.along)
+        // 반복 이동을 멈춤: 지금 있는 자리에 그대로 둔다
+        for (const [id, a] of Object.entries(this.anim)) {
+          if (!a.path?.loop) continue
+          if (id !== op.id && !(op.along && a.path.along === op.along)) continue
+          a.path = null
+          a.gx = a.dx
+          a.gy = a.dy
+          const sp = this.spawned[id]
+          if (sp) { sp.gx = sp.x; sp.gy = sp.y }
+        }
         return 300
       case 'spawn': {
         let p: Pt = { x: W / 2, y: H / 2 }
-        if (op.at) p = { x: op.at[0], y: op.at[1] }
+        let pts: Pt[] | undefined
+        if (op.shape === 'arrow') {
+          const end = (e: string | [number, number] | undefined) => typeof e === 'string' ? this.center(e) : e ? { x: e[0], y: e[1] } : null
+          const a0 = end(op.from), b0 = end(op.to)
+          if (!a0 || !b0) return 0
+          // 두 객체 중심을 잇되 양 끝을 조금 줄여 글자·상자를 덮지 않게
+          const L = dist(a0, b0) || 1
+          const cut = Math.min(40, L * 0.2) / L
+          pts = [{ x: a0.x + (b0.x - a0.x) * cut, y: a0.y + (b0.y - a0.y) * cut }, { x: b0.x - (b0.x - a0.x) * cut, y: b0.y - (b0.y - a0.y) * cut }]
+          p = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+        } else if (op.at) p = { x: op.at[0], y: op.at[1] }
         else if (op.on) p = this.center(op.on) ?? p
         this.spawned[op.id] = {
+          ...(pts ? { pts } : {}),
           shape: op.shape,
           x: clamp(p.x, 0, W),
           y: clamp(p.y, 0, H),
@@ -309,7 +360,19 @@ export class Engine {
           if (!pts) return 0
           const end = pts[pts.length - 1]
           const base = sp ? { x: 0, y: 0 } : { x: from.x - this.offset(op.id).x, y: from.y - this.offset(op.id).y }
-          a.path = { pts, t0: now, dur: op.dur, base }
+          // 반복은 경로에서 지금 자리와 가장 가까운 곳부터 시작한다 (시작점으로 순간이동하지 않게)
+          let t0 = now
+          if (op.loop) {
+            let bi = 0
+            pts.forEach((q, i) => { if (dist(q, from) < dist(pts[bi], from)) bi = i })
+            t0 = now - (pathLen(pts.slice(0, bi + 1)) / Math.max(1, pathLen(pts))) * op.dur
+          }
+          a.path = { pts, t0, dur: op.dur, base, along: op.along, ...(op.loop ? { loop: isClosedPath(pts) ? 'wrap' as const : 'bounce' as const } : {}) }
+          if (op.loop) {
+            // 반복 중에는 도착지가 지금 자리(계획·겹침 판단 기준)
+            if (sp) { sp.gx = sp.x; sp.gy = sp.y } else { a.gx = a.dx; a.gy = a.dy }
+            return op.dur
+          }
           if (sp) {
             sp.gx = end.x
             sp.gy = end.y
@@ -393,7 +456,8 @@ export class Engine {
       }
       if (a.pulse > 0) a.pulse = Math.max(0, a.pulse - dt * 1.2)
       if (a.path) {
-        const k = clamp((now - a.path.t0) / a.path.dur, 0, 1)
+        const raw = (now - a.path.t0) / a.path.dur
+        const k = a.path.loop === 'wrap' ? raw % 1 : a.path.loop === 'bounce' ? 1 - Math.abs((raw % 2) - 1) : clamp(raw, 0, 1)
         const q = pointOnPath(a.path.pts, k)
         const sp = this.spawned[id]
         if (sp) {
@@ -403,7 +467,7 @@ export class Engine {
           a.dx = q.x - a.path.base.x
           a.dy = q.y - a.path.base.y
         }
-        if (k >= 1) a.path = null
+        if (!a.path.loop && k >= 1) a.path = null
       }
     }
     for (const f of this.flows) {
@@ -466,6 +530,21 @@ export class Engine {
         c.stroke()
       } else if (s.shape === 'box') {
         c.strokeRect(-s.w / 2, -s.h / 2, s.w, s.h)
+      } else if (s.shape === 'arrow' && s.pts) {
+        const [p0, p1] = s.pts.map((q) => ({ x: q.x - s.x, y: q.y - s.y }))
+        const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x)
+        c.beginPath()
+        c.moveTo(p0.x, p0.y)
+        c.lineTo(p1.x, p1.y)
+        c.moveTo(p1.x - 16 * Math.cos(ang - 0.45), p1.y - 16 * Math.sin(ang - 0.45))
+        c.lineTo(p1.x, p1.y)
+        c.lineTo(p1.x - 16 * Math.cos(ang + 0.45), p1.y - 16 * Math.sin(ang + 0.45))
+        c.stroke()
+        if (s.text) {
+          c.font = `22px ${FONT}`
+          c.textAlign = 'center'
+          c.fillText(s.text, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2 - 12)
+        }
       } else {
         c.font = `28px ${FONT}`
         c.textAlign = 'center'
@@ -526,8 +605,10 @@ export class Engine {
         return `${id}(${parts.join(', ')})`
       })
     if (moved.length) out.push('바뀐 객체: ' + moved.join(', '))
+    const loops = Object.entries(this.anim).filter(([id, a]) => a.path?.loop && !isEffectId(id))
+    if (loops.length) out.push('계속 도는 중(stop id로 멈춤): ' + loops.map(([id]) => id).join(', '))
     const sp = Object.entries(this.spawned).filter(([id]) => !isEffectId(id))
-    if (sp.length) out.push('네가 만든 객체: ' + sp.map(([id, s]) => `${id} ${s.shape}${s.text ? ' "' + s.text + '"' : ''} (${r(s.x)},${r(s.y)})`).join(', '))
+    if (sp.length) out.push('네가 만든 객체: ' + sp.map(([id, s]) => `${id} ${s.shape}${s.text ? ' "' + s.text + '"' : ''} ${s.pts ? `(${r(s.pts[0].x)},${r(s.pts[0].y)})→(${r(s.pts[1].x)},${r(s.pts[1].y)}) 경로로 쓸 수 있음` : `(${r(s.x)},${r(s.y)})`}`).join(', '))
     return out.join('\n') || '(움직이는 것 없음)'
   }
 }

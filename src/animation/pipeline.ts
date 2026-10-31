@@ -9,7 +9,7 @@ import { Engine, Player, type PlayStep } from './engine'
 import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
 import { quickFromBoard, quickFromSpeech } from './quick'
-import { describeGrounding, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
+import { describeGrounding, type GateMode, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
 import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput, type SttProvider } from './speech'
@@ -29,6 +29,8 @@ export interface Settings {
   scene: boolean
   /** 받아쓰기: 브라우저 내장 / OpenAI / Gemini 실시간 */
   stt: SttProvider
+  /** AI 동작을 막는 규칙의 강도 (실측 비교용) */
+  gate: GateMode
 }
 
 export type AiStatus = 'checking' | 'ready' | 'nokey' | 'locked' | 'error'
@@ -81,7 +83,7 @@ export class Pipeline {
   readonly speech: SpeechInput
   readonly scene: SceneParser
 
-  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true, stt: 'browser' }
+  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true, stt: 'browser', gate: 'strict' }
   aiStatus: AiStatus = 'checking'
   aiNote = ''
   mic: MicState = 'off'
@@ -220,7 +222,7 @@ export class Pipeline {
 
   cfgKey() {
     const s = this.settings
-    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}/듣기:${s.stt}`
+    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}/듣기:${s.stt}/규칙:${s.gate}`
   }
 
   update(patch: Partial<Settings>) {
@@ -441,7 +443,7 @@ export class Pipeline {
         shown: this.shown,
         trigger: trig.desc,
         now: performance.now(),
-      }) + (trig.grounding ? '\n' + describeGrounding(trig.grounding) : '')
+      }) + (trig.grounding ? '\n' + describeGrounding(trig.grounding, settings.gate) : '')
       content.push({ type: 'text', text: prompt })
       rec.tSend = performance.now()
       this.log('request-update', { rec: { ...rec }, reason: 'send', prompt, imageB64 })
@@ -554,6 +556,8 @@ export class Pipeline {
 
   /** 스트리밍으로 쌓이는 응답 글자를 단계·동작으로 바꿔 바로 재생에 넘긴다 */
   private consume(rec: ReqRecord, grounding?: Grounding, signal?: AbortSignal, threshold = this.settings.thr) {
+    // 요청을 시작할 때의 규칙으로 끝까지 판단한다
+    const gate = this.settings.gate
     const seen = new Set<number>()
     const epoch = this.epoch
     let expectedLayout = this.engine.layoutKey()
@@ -591,7 +595,7 @@ export class Pipeline {
         if (!validOps.length) return
         const swap = swapKey(validOps)
         const reason = (swap && this.lastSwap?.key === swap && performance.now() - this.lastSwap.t < SWAP_REPEAT_MS ? '방금 바꾼 두 값을 다시 바꿈(되풀이한 말)' : null)
-          ?? (grounding ? rejectUngrounded(validOps, grounding, this.board) : null)
+          ?? (grounding ? rejectUngrounded(validOps, grounding, this.board, gate) : null)
         if (reason) { reject(reason); return }
         const mutations = validOps.filter((op) => op.v === 'move').map((op) => [op.id, op.to, op.along]).sort()
         const st: PlayStep = {
@@ -599,7 +603,7 @@ export class Pipeline {
           commitKey: `${grounding?.id ?? rec.id}:${mutations.length ? JSON.stringify(mutations) : i}`,
           validate: () => signal?.aborted || epoch !== this.epoch ? '취소되거나 이전 페이지의 요청'
             : this.engine.layoutKey() !== expectedLayout ? '요청 이후 칠판 배치가 바뀜'
-            : grounding ? rejectUngrounded(validOps, grounding, this.board) : null,
+            : grounding ? rejectUngrounded(validOps, grounding, this.board, gate) : null,
           onApplied: () => {
             expectedLayout = this.engine.layoutKey()
             // 다른 이동이 끼면 되풀이가 아니라 새 교환이므로 기록을 바꾼다
