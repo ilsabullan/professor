@@ -53,6 +53,11 @@ export type InkEvent =
   | { type: 'point'; page: number; points: InkPoint[] }
   /** 페이지 필기 전부 지움 */
   | { type: 'clear'; page: number }
+  /**
+   * 지우개가 지나가는 자리 (움직일 때마다). 애니메이션이 그린 것(움직인 필기, 새로 생긴 점·도형·이름표, 흐름)도 지운다.
+   * 움직인 필기에 닿으면 애니메이션 쪽이 removeStrokes로 그 획을 지워 달라고 요청한다
+   */
+  | { type: 'eraseAt'; page: number; x: number; y: number; r: number; t: number }
 
 /** 애니메이션 레이어 → 편집기 */
 export type LayerRequest =
@@ -60,4 +65,6 @@ export type LayerRequest =
    * 애니메이션이 필기를 직접 움직이거나 색을 바꿀 때, 원래 필기를 잠시 숨겨 달라는 요청.
    * 숨긴 동안에는 애니메이션 레이어가 그 획을 대신 그린다.
    */
-  { type: 'hideStrokes'; strokeIds: string[]; hidden: boolean }
+  | { type: 'hideStrokes'; strokeIds: string[]; hidden: boolean }
+  /** 지우개가 애니메이션이 대신 그리던 필기에 닿음. 편집기는 그 획을 지우고 평소처럼 erase를 보낸다 */
+  | { type: 'removeStrokes'; strokeIds: string[] }

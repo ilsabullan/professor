@@ -114,6 +114,63 @@ export class Engine {
     this.tweens = []
   }
 
+  /**
+   * 지우개가 p 근처(반경 r)를 지남. 새로 생긴 것·이름표·흐름은 바로 지우고,
+   * 대신 그리던(움직인) 필기에 닿으면 그 획 id를 돌려준다 (편집기가 실제 필기를 지운다)
+   */
+  eraseAt(p: Pt, r: number): { strokeIds: string[]; erased: string[] } {
+    const erased: string[] = []
+    const near = (cx: number, cy: number, hw: number, hh: number) =>
+      Math.abs(p.x - cx) <= hw + r && Math.abs(p.y - cy) <= hh + r
+
+    for (const [id, s] of Object.entries(this.spawned)) {
+      const sc = this.anim[id]?.sc ?? 1
+      const [hw, hh] =
+        s.shape === 'dot'
+          ? [s.r, s.r]
+          : s.shape === 'circle'
+            ? [s.r * 2, s.r * 2]
+            : s.shape === 'box'
+              ? [s.w / 2, s.h / 2]
+              : [Math.max(10, s.text.length * 14), 16]
+      const label = this.anim[id]?.labelText
+      const onLabel = !!label && near(s.x, s.y - s.r - 20, label.length * 11, 14)
+      if (near(s.x, s.y, hw * sc, hh * sc) || onLabel) {
+        delete this.spawned[id]
+        delete this.anim[id]
+        erased.push(id)
+      }
+    }
+
+    const strokeIds: string[] = []
+    for (const o of this.board.objs) {
+      const a = this.anim[o.id]
+      if (!a) continue
+      // 그린 객체 위 이름표
+      if (a.labelText && near(o.bbox.x + o.bbox.w / 2 + a.dx, o.bbox.y + a.dy - 18, a.labelText.length * 11, 14)) {
+        delete a.labelText
+        erased.push(o.id + ':label')
+      }
+      if (!this.takenOver.has(o.id) || a.alpha <= 0.05) continue
+      // 그린 자리 기준으로 되돌려서 원래 획과 비교 (중심 기준 확대·이동의 역변환)
+      const c = boxCenter(o.bbox)
+      const q = { x: (p.x - c.x - a.dx) / a.sc + c.x, y: (p.y - c.y - a.dy) / a.sc + c.y }
+      const rr = r / a.sc + 4
+      if (o.strokes.some((st) => st.pts.some((pt) => Math.hypot(pt.x - q.x, pt.y - q.y) <= rr))) {
+        strokeIds.push(...this.strokeIdsOf(o))
+        erased.push(o.id)
+      }
+    }
+
+    const before = this.flows.length
+    this.flows = this.flows.filter((f) => {
+      const pts = this.linePts(f.along)
+      return !pts?.some((pt) => Math.hypot(pt.x - p.x, pt.y - p.y) <= r + 6)
+    })
+    if (this.flows.length !== before) erased.push('flow')
+    return { strokeIds, erased }
+  }
+
   /** 지워진 객체의 애니메이션 정리 */
   forget(ids: string[]) {
     for (const id of ids) {

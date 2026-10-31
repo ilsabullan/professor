@@ -73,3 +73,31 @@ describe('되돌리기 방지', () => {
     expect(e.settled('o2')).toEqual({ x: 200, y: 300 })
   })
 })
+
+describe('eraseAt (지우개로 애니메이션 지우기)', () => {
+  it('새로 생긴 점은 닿으면 바로 지워진다', () => {
+    const { e } = setup()
+    run(e, [{ v: 'spawn', id: 'p1', shape: 'dot', at: [600, 300], color: '#ff5a46', text: '', r: 8, w: 0, h: 0 }])
+    expect(e.exists('p1')).toBe(true)
+    expect(e.eraseAt({ x: 900, y: 300 }, 10).erased).toEqual([])
+    expect(e.eraseAt({ x: 605, y: 302 }, 10).erased).toEqual(['p1'])
+    expect(e.exists('p1')).toBe(false)
+  })
+
+  it('움직인 필기는 옮겨진 자리에서 닿아야 하고, 그 획 id를 돌려준다', () => {
+    const { e } = setup()
+    run(e, [{ v: 'move', id: 'o1', to: [200, 500], dur: 300 }])
+    expect(e.isTakenOver('o1')).toBe(true)
+    // 원래 자리(200,300)는 비었으므로 안 지워진다
+    expect(e.eraseAt({ x: 220, y: 300 }, 10).strokeIds).toEqual([])
+    expect(e.eraseAt({ x: 220, y: 500 }, 10).strokeIds).toEqual(['so1'])
+  })
+
+  it('흐름은 그 선 위를 지나면 멈춘다', () => {
+    const { e } = setup()
+    run(e, [{ v: 'flow', along: 'o2', n: 6, speed: 1, color: '#cdf0ff', rev: false }])
+    expect(e.flows.length).toBe(1)
+    e.eraseAt({ x: 420, y: 300 }, 10)
+    expect(e.flows.length).toBe(0)
+  })
+})

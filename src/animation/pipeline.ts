@@ -109,7 +109,10 @@ export class Pipeline {
   submitted = 0
 
   /** headless: 브라우저 없이(채점 등) 돌릴 때. 프록시 확인·캐시 데우기·이미지 없이 바로 준비 상태 */
-  constructor(bus: InkBus, opts: { headless?: boolean } = {}) {
+  constructor(
+    private bus: InkBus,
+    opts: { headless?: boolean } = {},
+  ) {
     this.engine = new Engine(this.board, (strokeIds, hidden) => bus.request({ type: 'hideStrokes', strokeIds, hidden }))
     this.player = new Player(this.engine, {
       onFirstOp: (step, now) => {
@@ -221,6 +224,15 @@ export class Pipeline {
 
   // ---------- 입력 ----------
   private handleInk(e: InkEvent) {
+    if (e.type === 'eraseAt') {
+      // 지우개가 움직일 때마다 오므로, 실제로 지운 것이 있을 때만 기록한다
+      const { strokeIds, erased } = this.engine.eraseAt({ x: e.x, y: e.y }, e.r)
+      if (!erased.length) return
+      this.log('eraseAnim', { at: [e.x, e.y], erased, strokeIds })
+      if (strokeIds.length) this.bus.request({ type: 'removeStrokes', strokeIds })
+      this.notify()
+      return
+    }
     const before = this.board.objs.map((o) => o.id)
     this.log('ink', { event: e })
     const ev = this.board.apply(e)

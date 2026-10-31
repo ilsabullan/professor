@@ -55,6 +55,8 @@ type Props = {
   onEraseStart: () => void;
   onErase: (ids: Set<string>) => void;
   onEraseEnd: () => void;
+  /** 지우개가 지나는 자리. radius는 페이지 너비 대비 비율 (애니메이션이 그린 것도 지우려고) */
+  onEraseAt?: (p: Point, radius: number) => void;
   onLaser: (trail: LaserTrail) => void;
 };
 
@@ -269,7 +271,8 @@ export function PageCanvas(props: Props) {
   };
 
   const eraseAt = (p: Point) => {
-    const { strokes, cssWidth, onErase } = latest.current;
+    const { strokes, cssWidth, onErase, onEraseAt } = latest.current;
+    onEraseAt?.(p, ERASER_RADIUS / cssWidth);
     const h = (cssWidth * page.height) / page.width;
     const hit = new Set(strokes.filter((s) => hitStroke(s, p.x, p.y, ERASER_RADIUS, cssWidth, h)).map((s) => s.id));
     if (hit.size) onErase(hit);

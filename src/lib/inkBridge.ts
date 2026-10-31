@@ -28,6 +28,19 @@ export function toInkStroke(s: Stroke, page: Page, pageNumber: number, sessionSt
   };
 }
 
+/** 지우개 위치(페이지 비율)와 반경(페이지 너비 대비)을 페이지 좌표로 */
+export function toEraseAt(p: Point, radius: number, page: Page, pageNumber: number) {
+  const height = (BRIDGE_PAGE_WIDTH * page.height) / page.width;
+  return {
+    type: "eraseAt" as const,
+    page: pageNumber,
+    x: p.x * BRIDGE_PAGE_WIDTH,
+    y: p.y * height,
+    r: radius * BRIDGE_PAGE_WIDTH,
+    t: performance.now(),
+  };
+}
+
 export function toInkPoints(trail: LaserTrail, page: Page, sessionStart: number): InkPoint[] {
   return trail.points.map((p) => toInkPoint(p, page, sessionStart));
 }

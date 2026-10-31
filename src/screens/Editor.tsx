@@ -20,7 +20,7 @@ import {
 import type { Lecture, Page, Stroke, Tool } from "../types";
 import { deleteStrokes, getAllStrokes, getLecture, putLecture, putStrokes } from "../lib/db";
 import { getPdfPageText, loadLecturePdf, type PDFDocumentProxy } from "../lib/pdf";
-import { pageInfo, toInkPoints, toInkStroke } from "../lib/inkBridge";
+import { pageInfo, toEraseAt, toInkPoints, toInkStroke } from "../lib/inkBridge";
 import type { InkBus } from "../shared/bus";
 import { emitLaser, emitStroke } from "../lib/events";
 import { uid } from "../lib/id";
@@ -148,10 +148,24 @@ export function Editor({
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const pendingErase = useRef<string[]>([]); // 지우개를 떼는 순간 한 번에 보낸다
 
+  // 지우개가 애니메이션이 대신 그리던 필기에 닿으면 그 획을 실제로 지운다 (최신 상태를 쓰도록 ref로 연결)
+  const removeStrokes = useRef<(ids: string[]) => void>(() => {});
+  removeStrokes.current = (ids) => {
+    if (!page) return;
+    const gone = new Set(ids);
+    const cur = strokes.current[page.id] ?? EMPTY;
+    if (!cur.some((s) => gone.has(s.id))) return;
+    // 지우개를 누른 채라면 손을 뗄 때 실행 취소 기록이 한 번에 남는다
+    setPageStrokes(page.id, cur.filter((s) => !gone.has(s.id)), !eraseBase.current);
+  };
+
   useEffect(
     () =>
       bus?.onRequest((r) => {
-        if (r.type !== "hideStrokes") return;
+        if (r.type === "removeStrokes") {
+          removeStrokes.current(r.strokeIds);
+          return;
+        }
         setHidden((prev) => {
           const next = new Set(prev);
           r.strokeIds.forEach((id) => (r.hidden ? next.add(id) : next.delete(id)));
@@ -797,6 +811,7 @@ export function Editor({
                 onErase={(ids) =>
                   setPageStrokes(page.id, (strokes.current[page.id] ?? EMPTY).filter((s) => !ids.has(s.id)), false)
                 }
+                onEraseAt={(p, radius) => bus?.emit(toEraseAt(p, radius, page, pageNumber))}
                 onEraseEnd={() => {
                   const base = eraseBase.current;
                   eraseBase.current = null;
