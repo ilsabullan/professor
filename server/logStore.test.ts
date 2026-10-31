@@ -26,3 +26,21 @@ describe('log storage', () => {
     expect(() => store({ session: 'session-test', entries: [{ n: 1, type: 'test' }, { n: 0, type: 'test' }] })).toThrow()
   })
 })
+
+describe('audio storage', () => {
+  it('appends audio parts of one recording into a single file once, even when retried', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ilsabullan-log-test-'))
+    const store = createLogStore(dir)
+    const part = (n: number, text: string) => ({ n, type: 'audio', rec: 1, part: n, mime: 'audio/webm;codecs=opus', t0: n * 1000, t1: n * 1000 + 1000, audioB64: Buffer.from(text).toString('base64') })
+    store({ session: 'session-audio', entries: [part(1, 'head')] })
+    store({ session: 'session-audio', entries: [part(1, 'head'), part(2, '-tail')] })
+    expect(readFileSync(join(dir, 'session-audio/audio-1.webm'), 'utf8')).toBe('head-tail')
+    const lines = readFileSync(join(dir, 'session-audio.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(lines.map((l) => [l.audioFile, l.bytes, l.t0, l.audioB64])).toEqual([['logs/session-audio/audio-1.webm', 4, 1000, undefined], ['logs/session-audio/audio-1.webm', 5, 2000, undefined]])
+  })
+
+  it('rejects unknown audio formats without writing', () => {
+    const store = createLogStore(mkdtempSync(join(tmpdir(), 'ilsabullan-log-test-')))
+    expect(() => store({ session: 'session-audio', entries: [{ n: 1, type: 'audio', rec: 1, mime: 'text/html', audioB64: 'eA==' }] })).toThrow()
+  })
+})
