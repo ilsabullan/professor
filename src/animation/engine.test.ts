@@ -15,10 +15,10 @@ function setup() {
   return { b, e }
 }
 
-const run = (e: Engine, ops: Parameters<Engine['applyOp']>[0][]) => {
+const run = (e: Engine, ops: Parameters<Engine['applyOp']>[0][], t = 0) => {
   e.beginStep()
-  ops.forEach((op) => e.applyOp(op, 0))
-  e.tick(10_000, 0.05)
+  ops.forEach((op) => e.applyOp(op, t))
+  e.tick(t + 10_000, 0.05)
 }
 
 describe('move', () => {
@@ -39,17 +39,37 @@ describe('move', () => {
     expect(e.overlaps()).toEqual([['o1', 'o2']])
   })
 
-  it('다음 단계는 이전 단계가 끝난 자리 기준', () => {
+  it('다음 단계는 이전 단계가 끝난 자리 기준 (15초 넘게 지나 다시 맞바꾸면 원위치)', () => {
     const { e } = setup()
     run(e, [
       { v: 'move', id: 'o1', to: 'o2', dur: 500 },
       { v: 'move', id: 'o2', to: 'o1', dur: 500 },
     ])
-    run(e, [
-      { v: 'move', id: 'o1', to: 'o2', dur: 500 },
-      { v: 'move', id: 'o2', to: 'o1', dur: 500 },
-    ])
+    run(
+      e,
+      [
+        { v: 'move', id: 'o1', to: 'o2', dur: 500 },
+        { v: 'move', id: 'o2', to: 'o1', dur: 500 },
+      ],
+      20_000,
+    )
     expect(e.settled('o1')).toEqual({ x: 200, y: 300 })
     expect(e.settled('o2')).toEqual({ x: 400, y: 300 })
+  })
+})
+
+describe('되돌리기 방지', () => {
+  it('방금 맞바꾼 쌍을 곧바로 다시 맞바꾸지 않는다 (실측: 5↔3이 두 번 실행돼 원위치)', () => {
+    const { e } = setup()
+    const swap = (t: number) => {
+      e.beginStep()
+      e.applyOp({ v: 'move', id: 'o1', to: 'o2', dur: 500 }, t)
+      e.applyOp({ v: 'move', id: 'o2', to: 'o1', dur: 500 }, t)
+      e.tick(t + 10_000, 0.05)
+    }
+    swap(1000)
+    swap(5000)
+    expect(e.settled('o1')).toEqual({ x: 400, y: 300 })
+    expect(e.settled('o2')).toEqual({ x: 200, y: 300 })
   })
 })

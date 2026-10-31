@@ -74,6 +74,10 @@ export class Engine {
   private takenOver = new Set<string>()
   /** 지금 단계가 시작될 때의 위치 (한 단계 안의 move는 모두 이 기준으로 동시에 움직인다) */
   private frozen = new Map<string, Pt>()
+  /** 이번 단계의 move (id → 목적지 객체 id). 서로 맞바꾸는 쌍을 알아보려고 */
+  private stepMoves = new Map<string, string>()
+  /** 마지막으로 맞바꾼 쌍과 시각 */
+  private lastSwap: { pair: string; t: number } | null = null
 
   constructor(
     private board: Board,
@@ -128,6 +132,7 @@ export class Engine {
   /** 새 단계 시작: 단계 시작 위치 기록을 비운다 */
   beginStep() {
     this.frozen.clear()
+    this.stepMoves.clear()
   }
 
   /** 움직임이 끝났을 때 놓일 중심 (진행 중인 애니메이션의 도착지) */
@@ -237,6 +242,16 @@ export class Engine {
         return 400
       }
       case 'move': {
+        // 방금(15초 안) 맞바꾼 두 객체를 다시 맞바꾸면 되돌리기가 되므로 무시한다
+        // (말하는 중 요청과 확정 요청이 같은 교환을 두 번 실행하던 문제)
+        if (typeof op.to === 'string') {
+          const pair = [op.id, op.to].sort().join('|')
+          if (this.lastSwap && this.lastSwap.pair === pair && now - this.lastSwap.t < 15000 && this.stepMoves.get(op.to) !== op.id) {
+            return 0
+          }
+          this.stepMoves.set(op.id, op.to)
+          if (this.stepMoves.get(op.to) === op.id) this.lastSwap = { pair, t: now }
+        }
         // 출발점과 도착점 모두 '이 단계가 시작될 때의 위치' 기준. 같은 단계의 move들은 동시에 움직이므로
         // o7→o8, o8→o7 을 같이 쓰면 교환이 된다. 도착지에 무엇이 있든 엔진이 따로 손대지 않는다
         const from = this.startPos(op.id)
