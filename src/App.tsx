@@ -59,7 +59,7 @@ export function App({ pipeline, bus }: { pipeline: Pipeline; bus: InkBus }) {
           initialPage={route.page}
           onBack={goToList}
           bus={bus}
-          overlay={<AnimationOverlay pipeline={pipeline} />}
+          overlay={<AnimationOverlay pipeline={pipeline} showCaption={panelOpen} />}
           panelOpen={panelOpen}
           onTogglePanel={togglePanel}
         />

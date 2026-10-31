@@ -6,8 +6,9 @@ const MAX_PIXELS = 8_000_000
 /**
  * 필기 캔버스 위에 겹치는 투명 애니메이션 레이어.
  * 부모가 필기 캔버스와 같은 크기·위치로 놓아 주면 된다 (페이지 좌표 → 화면 크기로 자동 맞춤).
+ * showCaption: AI가 한 일 설명과 ✓/✗ 피드백. 실험실(테스트 패널)을 켰을 때만 보인다
  */
-export function AnimationOverlay({ pipeline }: { pipeline: Pipeline }) {
+export function AnimationOverlay({ pipeline, showCaption = true }: { pipeline: Pipeline; showCaption?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useSyncExternalStore(pipeline.subscribe, pipeline.getVersion)
 
@@ -45,7 +46,7 @@ export function AnimationOverlay({ pipeline }: { pipeline: Pipeline }) {
   return (
     <div className="overlay">
       <canvas ref={ref} />
-      {pipeline.caption && (
+      {showCaption && pipeline.caption && (
         <div className="caption">
           {pipeline.caption}
           {pipeline.lastPlayed && (
