@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, groundSpeech, measureTranslation, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, groundSpeech, measureTranslation, repairOrbit, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -430,5 +430,29 @@ describe('좌표축 (06:48 실측: x축 화살표에 TCP 패킷 같은 입자가
       const b = new Board()
       for (const e of fixture(name).events) { b.apply(e); expect(b.axes().size, name).toBe(0) }
     }
+  })
+})
+
+describe('08:46 실측: 태양 주위를 도는 지구', () => {
+  // logs 084606 n=486: "그래서 지구가 돌면서 여름에서 겨울로 바뀌어요"에 대한 응답 원문
+  const raw = '{"conf":0.8,"ops":[{"v":"rotate","id":"o8","deg":360,"about":"o8","dur":6000,"loop":true},{"v":"flow","along":"o9","n":4,"speed":0.8,"color":"amber"}],"cap":"지구 자전으로 낮과 밤이 바뀜"}'
+  const text = '그래서 지구가 돌면서 여름에서 겨울로 바뀌어요'
+
+  it('가운데 큰 원을 돌리지 않고 궤도 위 작은 원을 궤도를 따라 돌린다', () => {
+    const c = fixture('real-orbit-084606')
+    const b = boardAt(c, 484)
+    const id = realIds(c, b, 484)
+    const ops = repairOrbit(remapOps(opsOf(raw), id), text, b)
+    expect(ops[0]).toMatchObject({ v: 'move', id: id('o10'), along: id('o9'), loop: true })
+    const g = groundSpeech(b, text, [], 'a', 'final')
+    expect(keepGrounded(ops, g, b).ops.map((op) => op.v)).toContain('move')
+    expect(new Engine(b, () => {}).validateStep(ops)).toBeNull()
+  })
+
+  it('"자전"이라고 말하면 제자리 회전을 그대로 둔다', () => {
+    const c = fixture('real-orbit-084606')
+    const b = boardAt(c, 484)
+    const ops = remapOps(opsOf(raw), realIds(c, b, 484))
+    expect(repairOrbit(ops, '지구가 자전해요', b)[0].v).toBe('rotate')
   })
 })

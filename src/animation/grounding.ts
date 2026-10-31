@@ -1,6 +1,7 @@
 import type { Board } from './board'
 import type { Op } from './ops'
 import type { Engine } from './engine'
+import { distToSegment } from './geometry'
 
 export interface Grounding {
   id: string
@@ -158,6 +159,34 @@ export function measureTranslation(ops: Op[], text: string, board: Board, now: n
   const by: [number, number] = [dx ? dx * Math.round(vx) : 0, dy ? dy * Math.round(vy) : 0]
   if (Math.hypot(...by) < 20) return ops
   return ops.map((op) => op.v === 'move' && op.by && op.id !== arrow.id ? { ...op, by } : op)
+}
+
+/**
+ * 공전: 궤도 안쪽 객체를 제자리에서 돌리는 응답을, 궤도 위에 있는 객체가 궤도를 따라 도는 이동으로 바꾼다.
+ * 실측 084606: "태양 주위를 도는 지구"라고 한 뒤 "지구가 돌면서"에 가운데 큰 원(태양)을 돌렸다.
+ * "자전"이라고 말했으면 제자리 회전이 맞으므로 그대로 둔다.
+ */
+export function repairOrbit(ops: Op[], text: string, board: Board): Op[] {
+  if (/자전/.test(text) || !/돌|공전|궤도|주위/.test(text)) return ops
+  const center = (b: { x: number; y: number; w: number; h: number }) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 })
+  const paths = board.objs.filter((o) => o.kind === 'line' && o.pts && o.pts.length >= 3 && !board.underlineOf(o.id))
+  return ops.map((op) => {
+    if (op.v !== 'rotate' || !op.loop || (op.about !== undefined && op.about !== op.id)) return op
+    const hub = board.get(op.id)
+    if (!hub) return op
+    const c = center(hub.bbox)
+    const path = paths.find((p) => p.id !== hub.id && c.x > p.bbox.x && c.x < p.bbox.x + p.bbox.w && c.y > p.bbox.y && c.y < p.bbox.y + p.bbox.h)
+    if (!path?.pts) return op
+    const pts = path.pts
+    const near = (o: typeof hub) => {
+      const q = center(o.bbox)
+      const d = Math.min(...pts.slice(1).map((b, i) => distToSegment(q, pts[i], b)))
+      return d <= Math.max(40, Math.hypot(o.bbox.w, o.bbox.h) / 2 + 20)
+    }
+    const riders = board.objs.filter((o) => o.id !== hub.id && o.id !== path.id && o.kind !== 'line' && o.kind !== 'text' && near(o))
+    if (riders.length !== 1) return op
+    return { v: 'move', id: riders[0].id, along: path.id, loop: true, dur: op.dur }
+  })
 }
 
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
