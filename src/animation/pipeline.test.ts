@@ -52,18 +52,35 @@ describe('실측의 입력 중첩과 잘못된 대상', () => {
     expect(p.engine.overlaps()).toEqual([])
   })
 
-  it('받아쓰기가 0.65초 멈추면 확정해 AI를 한 번만 부른다 (중간 글자마다 부르지 않음)', async () => {
+  it('받아쓰기가 0.9초 멈추면 확정해 AI를 한 번만 부른다 (중간 글자마다 부르지 않음)', async () => {
     const { p } = setup()
     for (const t of ['이 배열은', '이 배열은 아직', '이 배열은 아직 정렬이', '이 배열은 아직 정렬이 안 됐어요']) {
       p.onInterim(t, 0)
       await vi.advanceTimersByTimeAsync(200)
     }
     expect(requests).toHaveLength(0)
-    await vi.advanceTimersByTimeAsync(700)
+    await vi.advanceTimersByTimeAsync(1000)
     expect(requests).toHaveLength(1)
     // 브라우저가 같은 덩어리를 이어서 보내면 확정한 앞부분은 빼고 뒷말만 다음 문장으로
     p.onInterim('이 배열은 아직 정렬이 안 됐어요 그럼 비교해 볼게요', 0)
     expect(p.interim).toBe('그럼 비교해 볼게요')
+  })
+
+  it('받아쓰기가 확정한 앞부분을 고쳐 써도 같은 문장을 다시 확정하지 않는다 (실측: "을"→"의")', async () => {
+    const { p } = setup()
+    p.onInterim('5와 3을 자리가 바뀌겠죠', 0)
+    await vi.advanceTimersByTimeAsync(1000)
+    const n = requests.length
+    p.onInterim('5와 3의 자리가 바뀌겠죠 다음은 8이에요', 0)
+    expect(p.interim).toBe('다음은 8이에요')
+    expect(requests.length).toBe(n)
+  })
+
+  it('"바꿔 볼까요"는 "바꿔"에서 끊지 않는다', async () => {
+    const { p } = setup()
+    p.onInterim('8과 1의 자리를 바꿔', 0)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(requests).toHaveLength(0)
   })
 
   it('비교만 말했는데 8·1 교환이 나오면 움직이지 않는다', async () => {

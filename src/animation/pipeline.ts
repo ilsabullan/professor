@@ -48,7 +48,8 @@ interface Inflight {
 
 /** 계기별로 AI를 부르기 전 기다리는 시간(ms). 짧을수록 빠르고, 연달아 오는 입력은 하나로 묶는다 */
 const DELAY: Record<string, number> = {
-  획: 80,
+  // 그냥 획은 펜이 멈추면 한 번만 (획마다 부르면 숫자 한 글자에 세 번씩 불렀다)
+  획: 1200,
   글자: 0,
   화살표: 0,
   덧그리기: 0,
@@ -63,12 +64,12 @@ const DELAY: Record<string, number> = {
 /** 여러 입력을 묶을 때 계기 이름은 더 강한 신호로 */
 export const shortModel = (m: ModelId) => (m === 'claude-haiku-5-5' ? 'Haiku 5.5' : 'Sonnet 5.5')
 
-/** 받아쓰기 글자가 이만큼 그대로면 문장이 끝난 것으로 본다 (숨 쉬는 정도의 간격) */
-export const PAUSE_MS = 650
+/** 받아쓰기 글자가 이만큼 그대로면 문장이 끝난 것으로 본다. 실측 받아쓰기는 문장 중간에도 0.65초씩 멈춰서 0.9초 */
+export const PAUSE_MS = 900
 
 /** 이 말로 끝나면 멈춤을 기다리지 않고 바로 확정 (동작을 마무리하는 말) */
 export const ACTION_END =
-  /(바꿔요|바꿔|바꿉니다|바꿀게요|바꾸죠|바뀌어요|바뀝니다|바뀌죠|바뀔 거예요|옮겨요|옮깁니다|옮길게요|옮기죠|교환해요|교환합니다|교환하죠|이동해요|이동합니다|흘러가요|흘러가죠|흘러요|보내요|보냅니다|넣어요|넣습니다|빼요|꺼내요|밀려요|밀려나요|올라가요|내려가요|떨어져요|멈춰요|끊겨요)[.!?\s]*$/
+  /(바꿔요|바꿉니다|바꿀게요|바꾸죠|바뀌어요|바뀝니다|바뀌죠|바뀔 거예요|옮겨요|옮깁니다|옮길게요|옮기죠|교환해요|교환합니다|교환하죠|이동해요|이동합니다|흘러가요|흘러가죠|흘러요|보내요|보냅니다|넣어요|넣습니다|빼요|꺼내요|밀려요|밀려나요|올라가요|내려가요|떨어져요|멈춰요|끊겨요)[.!?\s]*$/
 
 export class Pipeline {
   readonly board = new Board()
@@ -352,9 +353,15 @@ export class Pipeline {
     if (!this.committedRaw) return raw
     const key = (s: string) => s.replace(/[\s.,!?~…]/g, '')
     const done = key(this.committedRaw)
-    if (!key(raw).startsWith(done)) {
-      this.committedRaw = ''
-      return raw
+    const now = key(raw)
+    if (!now.startsWith(done)) {
+      // 받아쓰기가 앞부분을 고쳐 쓴 경우("을"→"의")는 같은 덩어리로 본다: 같은 자리 글자가 70% 이상 같으면 확정한 길이만큼 자른다
+      let same = 0
+      for (let k = 0; k < done.length && k < now.length; k++) if (done[k] === now[k]) same++
+      if (same < 0.7 * done.length || now.length < done.length) {
+        this.committedRaw = ''
+        return raw
+      }
     }
     let seen = 0
     let i = 0
