@@ -12,17 +12,18 @@ import { extname, join, normalize, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { connect } from 'node:tls'
 import type { Duplex } from 'node:stream'
-import { hasCodeCookie, isAccessCode } from './accessCode.ts'
+import { codeCookieValue, hasCodeCookie, isAccessCode } from './accessCode.ts'
 
 const PORT = Number(process.env.PORT ?? 8080)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const DIST = resolve(process.env.DIST_DIR ?? 'dist')
-const CODE = process.env.ILSABULLAN_ACCESS_CODE ?? ''
+// env_file로 들어오면서 앞뒤 공백·따옴표가 남을 수 있어 떼어 낸다
+const CODE = (process.env.ILSABULLAN_ACCESS_CODE ?? '').trim().replace(/^(['"])(.*)\1$/, '$2')
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? ''
 const MAX_BODY = 20e6
 
 if (!isAccessCode(CODE)) {
-  console.error('ILSABULLAN_ACCESS_CODE가 없거나 형식이 틀립니다 (16진수 8~64자)')
+  console.error('ILSABULLAN_ACCESS_CODE가 없거나 형식이 틀립니다 (공백 없는 6~128자)')
   process.exit(1)
 }
 
@@ -128,7 +129,7 @@ const server = createServer((req, res) => {
   if (pathname === '/healthz') return json(res, 200, { ok: true })
 
   if (url.searchParams.get('k') === CODE) {
-    res.setHeader('set-cookie', `lb_code=${CODE}; Path=/; SameSite=Strict; Secure; HttpOnly; Max-Age=2592000`)
+    res.setHeader('set-cookie', `lb_code=${codeCookieValue(CODE)}; Path=/; SameSite=Strict; Secure; HttpOnly; Max-Age=2592000`)
   }
 
   if (pathname.startsWith('/api/')) {

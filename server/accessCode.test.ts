@@ -31,7 +31,10 @@ it('treats tunnelled loopback requests as remote so they need the access code', 
 it('accepts only the exact access code cookie', async () => {
   const { hasCodeCookie, isAccessCode } = await import('./accessCode')
   expect(isAccessCode('bd209140')).toBe(true)
-  expect(isAccessCode('short')).toBe(false)
+  expect(isAccessCode('Short-Code_9!')).toBe(true)
+  expect(isAccessCode('abc')).toBe(false)
+  expect(isAccessCode('has space')).toBe(false)
+  expect(hasCodeCookie('lb_code=' + encodeURIComponent('Pä=ss;?'), 'Pä=ss;?')).toBe(true)
   expect(isAccessCode('')).toBe(false)
   expect(hasCodeCookie('a=1; lb_code=bd209140', 'bd209140')).toBe(true)
   expect(hasCodeCookie('lb_code=bd209141', 'bd209140')).toBe(false)

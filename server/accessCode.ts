@@ -18,14 +18,19 @@ export function isDirectLocal(remoteAddress: string | undefined, headers: Record
   return LOOPBACK.has(remoteAddress ?? '') && !PROXY_HEADERS.some((h) => headers[h] != null)
 }
 
-/** 접속 코드 형식: 16진수 8~64자 */
+/** 배포용 접속 코드: 공백 없는 6~128자. 쿠키에는 URL 인코딩해서 넣는다 */
 export function isAccessCode(code: string | undefined): code is string {
-  return !!code && /^[a-f0-9]{8,64}$/.test(code)
+  return !!code && /^\S{6,128}$/.test(code)
 }
 
-/** 쿠키에 같은 접속 코드가 있는가 (길이가 같을 때 시간 차이 없이 비교) */
+/** 쿠키 값으로 넣을 접속 코드 */
+export const codeCookieValue = (code: string) => encodeURIComponent(code)
+
+/** 쿠키에 같은 접속 코드가 있는가 (시간 차이 없이 비교) */
 export function hasCodeCookie(cookie: string | undefined, code: string): boolean {
   const got = /(?:^|;\s*)lb_code=([^;]+)/.exec(cookie ?? '')?.[1]
-  if (!got || !code || got.length !== code.length) return false
-  return timingSafeEqual(Buffer.from(got), Buffer.from(code))
+  if (!got || !code) return false
+  const a = Buffer.from(got)
+  const b = Buffer.from(codeCookieValue(code))
+  return a.length === b.length && timingSafeEqual(a, b)
 }
