@@ -1,6 +1,8 @@
-import * as pdfjs from "pdfjs-dist";
-import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// 일반 빌드는 최신 브라우저 기능(Map.getOrInsert 등)을 써서 아이패드 사파리에서 PDF가 열리지 않는다.
+// 구형 브라우저용 legacy 빌드를 쓴다.
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { getPdf } from "./db";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;

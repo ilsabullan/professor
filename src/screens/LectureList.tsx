@@ -63,7 +63,8 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
       await reload();
     } catch (e) {
       console.error(e);
-      alert("PDF를 불러오지 못했어요. 파일을 확인해 주세요.");
+      const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      alert(`PDF를 불러오지 못했어요. 파일을 확인해 주세요.\n\n(${detail})`);
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
