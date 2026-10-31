@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -45,6 +45,28 @@ describe('최신 실측 회귀', () => {
     const owners = new Set(particles.map((sid) => b.objs.find((o) => o.strokes.some((st) => st.id === sid))!.id))
     expect(owners.size).toBe(particles.length)
     expect(Math.max(...b.objs.map((o) => o.strokes.length))).toBeLessThan(6)
+  })
+
+  it('08:28 실측: "오른쪽으로" 말했는데 왼쪽으로 민 그래프 이동을 오른쪽으로 바로잡는다', () => {
+    const b = boardFor(fixture('real-graph-082838'))
+    // 실측 AI 응답 그대로 (n=210, 271, 289, 334)
+    const real: [string, [number, number], number][] = [
+      ['y는 x 마이너스 2의 제곱 . 오른쪽으로 이만큼 옮기면', [-16, 0], 1],
+      ['오른쪽으로 이만큼 더 이동해요', [-16, 0], 1],
+      ['왼쪽으로 이만큼 더 이동해요', [-64, 0], -1],
+      ['오른쪽으로 8만큼 더 이동해요', [-192, 0], 1],
+    ]
+    for (const [text, by, dir] of real) {
+      const ops = alignDirection([{ v: 'move', id: 'o9', by, dur: 900 }], text)
+      const g = groundSpeech(b, text, [], 'a', 'final')
+      expect(rejectUngrounded(ops, g, b)).toBeNull()
+      expect(Math.sign((ops[0] as { by: [number, number] }).by[0])).toBe(dir)
+      expect(Math.abs((ops[0] as { by: [number, number] }).by[0])).toBe(Math.abs(by[0]))
+    }
+    // 방향을 말하지 않았거나 둘 다 말하면 그대로 둔다
+    const same: Op[] = [{ v: 'move', id: 'o9', by: [-40, 0], dur: 900 }]
+    expect(alignDirection(same, '이만큼 옮기면')).toBe(same)
+    expect(alignDirection(same, '오른쪽이 아니라 왼쪽으로')).toEqual(same)
   })
 
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {

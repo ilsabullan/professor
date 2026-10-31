@@ -118,6 +118,28 @@ export function planNumericSwap(board: Board, engine: Engine, g: Grounding): { o
  */
 export type GateMode = 'strict' | 'words' | 'minimal'
 
+/** 말한 방향: 오른쪽 +1, 왼쪽 -1 (가로), 아래 +1, 위 -1 (세로). 둘 다 말하거나 안 말하면 0 */
+function spokenDirection(text: string): [number, number] {
+  const sign = (pos: boolean, neg: boolean) => pos === neg ? 0 : pos ? 1 : -1
+  return [sign(/오른쪽/.test(text), /왼쪽/.test(text)), sign(/아래\s*(?:로|쪽)|밑으로/.test(text), /위\s*(?:로|쪽)/.test(text))]
+}
+
+/**
+ * 말한 방향과 반대 부호인 by를 말한 방향으로 바로잡는다. 크기는 그대로 둔다.
+ * 실측 082838: "오른쪽으로 8만큼"에 by [-192,0]처럼 매번 왼쪽으로 밀었다 (y=(x-2)²의 '마이너스'에 끌림)
+ */
+export function alignDirection(ops: Op[], text: string): Op[] {
+  const [dx, dy] = spokenDirection(text)
+  if (!dx && !dy) return ops
+  return ops.map((op) => {
+    if (op.v !== 'move' || !op.by) return op
+    const [bx, by] = op.by
+    const x = dx && Math.sign(bx) === -dx ? -bx : bx
+    const y = dy && Math.sign(by) === -dy ? -by : by
+    return x === bx && y === by ? op : { ...op, by: [x, y] as [number, number] }
+  })
+}
+
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
   const strict = mode === 'strict'
