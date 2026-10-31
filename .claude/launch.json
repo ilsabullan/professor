@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "professor-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173,
+      "url": "https://localhost:5173"
+    },
+    {
+      "name": "professor-dev-http",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["DEV_HTTP=1", "npm", "run", "dev", "--", "--port", "5174", "--strictPort"],
+      "port": 5174
+    }
+  ]
+}
