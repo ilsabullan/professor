@@ -20,7 +20,7 @@ import {
 import type { Lecture, Page, Stroke, Tool } from "../types";
 import { deleteStrokes, getAllStrokes, getLecture, putLecture, putStrokes } from "../lib/db";
 import { getPdfPageText, loadLecturePdf, type PDFDocumentProxy } from "../lib/pdf";
-import { pageInfo, toEraseAt, toInkPoints, toInkStroke } from "../lib/inkBridge";
+import { inkDiff, pageInfo, toEraseAt, toInkPoints, toInkStroke } from "../lib/inkBridge";
 import type { InkBus } from "../shared/bus";
 import { emitLaser, emitStroke } from "../lib/events";
 import { uid } from "../lib/id";
@@ -191,14 +191,10 @@ export function Editor({
   /** 지금 페이지 필기가 바뀐 만큼(새 획, 지운 획) 보낸다. 쓰기·지우기·실행 취소가 모두 여기로 온다 */
   const sendInkChange = (pageId: string, prev: Stroke[], next: Stroke[]) => {
     if (!bus || !page || pageId !== page.id) return;
-    const nextIds = new Set(next.map((s) => s.id));
-    const prevIds = new Set(prev.map((s) => s.id));
-    const removed = prev.filter((s) => !nextIds.has(s.id)).map((s) => s.id);
+    const { added, removed } = inkDiff(prev, next);
     if (removed.length && eraseBase.current) pendingErase.current.push(...removed);
     else if (removed.length) bus.emit({ type: "erase", page: pageNumber, strokeIds: removed, t: performance.now() });
-    for (const s of next) {
-      if (!prevIds.has(s.id)) bus.emit({ type: "stroke", stroke: toInkStroke(s, page, pageNumber, sessionStart.current) });
-    }
+    for (const s of added) bus.emit({ type: "stroke", stroke: toInkStroke(s, page, pageNumber, sessionStart.current) });
   };
 
   const flushErase = () => {

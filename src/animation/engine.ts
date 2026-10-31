@@ -680,13 +680,7 @@ export class Engine {
       const ink = a.color ? this.col(a.color) : s.color ?? this.col(INK)
       c.strokeStyle = ink
       c.fillStyle = ink
-      if (s.highlight) {
-        c.save()
-        c.globalAlpha *= 0.5
-        c.globalCompositeOperation = 'multiply'
-        drawStrokes(c, [s.pts], s.width)
-        c.restore()
-      } else drawStrokes(c, [s.pts], s.width)
+      drawStrokes(c, [s.pts], s.width)
     }
     if (o.kind === 'text' && o.text) {
       c.font = `30px ${FONT}`

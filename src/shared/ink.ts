@@ -25,8 +25,6 @@ export interface InkStroke {
   color?: string
   /** 페이지 좌표 기준 선 굵기 */
   width?: number
-  /** 형광펜: 반투명하게 겹쳐 그린다 */
-  highlight?: boolean
 }
 
 export interface PageInfo {

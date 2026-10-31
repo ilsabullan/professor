@@ -25,8 +25,20 @@ export function toInkStroke(s: Stroke, page: Page, pageNumber: number, sessionSt
     points: s.points.map((p) => toInkPoint(p, page, sessionStart)),
     color: s.color,
     width: s.width * BRIDGE_PAGE_WIDTH,
-    ...(s.tool === "highlighter" ? { highlight: true } : {}),
   };
+}
+
+/**
+ * 편집기 획 목록이 바뀐 것을 애니메이션에 보낼 추가·삭제로 나눈다.
+ * 형광펜은 PDF 글자 강조라서 칠판 필기로 보지 않는다 (AI가 선·밑줄로 읽고 움직이지 않게).
+ */
+export function inkDiff(prev: Stroke[], next: Stroke[]): { added: Stroke[]; removed: string[] } {
+  const pens = (list: Stroke[]) => list.filter((s) => s.tool === "pen");
+  const p = pens(prev);
+  const n = pens(next);
+  const nextIds = new Set(n.map((s) => s.id));
+  const prevIds = new Set(p.map((s) => s.id));
+  return { added: n.filter((s) => !prevIds.has(s.id)), removed: p.filter((s) => !nextIds.has(s.id)).map((s) => s.id) };
 }
 
 /** 지우개 위치(페이지 비율)와 반경(페이지 너비 대비)을 페이지 좌표로 */
