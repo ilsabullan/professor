@@ -43,6 +43,11 @@ interface AnimState {
   gy?: number
   /** 이 시각이 되면 사라짐 (그 전 300ms 동안 흐려짐) */
   removeAt?: number
+  /** 회전 각도(라디안, 시계 방향 +)와 회전축(페이지 좌표). 없으면 자기 중심 */
+  rot?: number
+  pivot?: Pt
+  /** 반복 회전: swing은 ±amp 왕복(진자), spin은 계속 회전(자전). stop id로 멈춘다 */
+  spin?: { mode: 'swing' | 'spin'; t0: number; period: number; amp: number }
 }
 
 /** 즉시 반응이 만든 효과(q…)는 AI에게 알리지 않는다. AI가 대상 객체로 착각하지 않게 */
@@ -193,6 +198,7 @@ export class Engine {
     for (const op of ops) {
       if ('id' in op && op.id && !positions.has(op.id)) return `없는 객체: ${op.id}`
       if (op.v === 'flow' && !this.isPath(op.along) && !newPaths.has(op.along)) return '연결 경로가 아닌 선'
+      if (op.v === 'rotate' && typeof op.about === 'string' && !positions.has(op.about)) return `없는 객체: ${op.about}`
       if (op.v !== 'move') continue
       if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
       moved.add(op.id)
@@ -231,6 +237,12 @@ export class Engine {
       if (overlap(a, b, goals.get(a.id)!, goals.get(b.id)!)) return `이동 후 겹침: ${a.id}, ${b.id}`
     }
     return null
+  }
+
+  /** 원래 자리·각도에서 벗어났거나 계속 움직이는 그린 객체 */
+  changed(): string[] {
+    return Object.entries(this.anim).filter(([id, a]) => this.board.get(id)
+      && (Math.abs(this.offset(id).x) > 1 || Math.abs(this.offset(id).y) > 1 || a.spin || a.path || Math.abs(a.rot ?? 0) > 0.01)).map(([id]) => id)
   }
 
   /** 움직임이 끝났을 때 놓일 중심 (진행 중인 애니메이션의 도착지) */
@@ -325,6 +337,8 @@ export class Engine {
       }
       case 'stop':
         if (op.along) this.flows = this.flows.filter((f) => f.along !== op.along)
+        // 반복 회전을 멈춤: 지금 각도에서 멈춘다
+        if (op.id && this.anim[op.id]?.spin) this.anim[op.id].spin = undefined
         // 반복 이동을 멈춤: 지금 있는 자리에 그대로 둔다
         for (const [id, a] of Object.entries(this.anim)) {
           if (!a.path?.loop) continue
@@ -424,6 +438,47 @@ export class Engine {
         }
         return op.dur
       }
+      case 'rotate': {
+        if (!this.exists(op.id)) return 0
+        if (!this.spawned[op.id]) this.takeOver(op.id)
+        const a = this.A(op.id)
+        const pivot = typeof op.about === 'string' ? this.center(op.about) : op.about ? { x: op.about[0], y: op.about[1] } : null
+        // 회전축은 객체 원래 자리 기준으로 저장한다 (그리기에서 이동량을 따로 더하지 않게 지금 이동량을 뺀다)
+        a.pivot = pivot ? { x: pivot.x - (this.spawned[op.id] ? 0 : a.dx), y: pivot.y - (this.spawned[op.id] ? 0 : a.dy) } : undefined
+        const rad = (op.deg * Math.PI) / 180
+        this.tweens = this.tweens.filter((w) => w.owner !== `${op.id}:rot`)
+        if (op.loop) {
+          const spin = Math.abs(op.deg) >= 360
+          a.spin = { mode: spin ? 'spin' : 'swing', t0: now, period: op.dur, amp: spin ? Math.sign(rad) * 2 * Math.PI : rad }
+          a.rot = 0
+          return Math.min(op.dur, 1200)
+        }
+        a.spin = undefined
+        const from = a.rot ?? 0
+        this.tween((v) => (a.rot = v), from, from + rad, op.dur, now, `${op.id}:rot`)
+        return op.dur
+      }
+      case 'restore': {
+        // 그린 객체는 원래 자리·각도로 돌아오고 반복 움직임을 멈춘다. 흐름도 같이 멈춘다
+        const ids = op.id ? [op.id] : Object.keys(this.anim).filter((id) => this.board.get(id))
+        for (const id of ids) {
+          const a = this.anim[id]
+          if (!a || !this.board.get(id)) continue
+          this.tweens = this.tweens.filter((w) => w.owner !== id && w.owner !== `${id}:rot`)
+          a.path = null
+          a.spin = undefined
+          a.gx = 0
+          a.gy = 0
+          this.tween((v) => (a.dx = v), a.dx, 0, op.dur, now, id)
+          this.tween((v) => (a.dy = v), a.dy, 0, op.dur, now, id)
+          // 가장 가까운 '똑바른' 각도로 (자전하던 것을 거꾸로 몇 바퀴 되감지 않게)
+          if (a.rot) this.tween((v) => (a.rot = v), a.rot, Math.round(a.rot / (2 * Math.PI)) * 2 * Math.PI, op.dur, now, `${id}:rot`)
+          if (a.sc !== 1) this.tween((v) => (a.sc = v), a.sc, 1, op.dur, now)
+        }
+        if (!op.id) this.flows = []
+        else this.flows = this.flows.filter((f) => f.along !== op.id)
+        return op.dur
+      }
       case 'color': {
         if (!this.exists(op.id)) return 0
         this.A(op.id).color = op.color
@@ -479,6 +534,10 @@ export class Engine {
         if (left < 300) a.alpha = Math.min(a.alpha, left / 300)
       }
       if (a.pulse > 0) a.pulse = Math.max(0, a.pulse - dt * 1.2)
+      if (a.spin) {
+        const k = (now - a.spin.t0) / a.spin.period
+        a.rot = a.spin.mode === 'spin' ? a.spin.amp * (k % 1) : a.spin.amp * Math.sin(2 * Math.PI * k)
+      }
       if (a.path) {
         const raw = (now - a.path.t0) / a.path.dur
         const k = a.path.loop === 'wrap' ? raw % 1 : a.path.loop === 'bounce' ? 1 - Math.abs((raw % 2) - 1) : clamp(raw, 0, 1)
@@ -535,6 +594,12 @@ export class Engine {
       const a = this.anim[id]
       c.save()
       c.globalAlpha = clamp(a?.alpha ?? 1, 0, 1)
+      if (a?.rot) {
+        const p = a.pivot ?? { x: s.x, y: s.y }
+        c.translate(p.x, p.y)
+        c.rotate(a.rot)
+        c.translate(-p.x, -p.y)
+      }
       c.translate(s.x, s.y)
       c.scale(a?.sc ?? 1, a?.sc ?? 1)
       if (a && a.pulse > 0) {
@@ -591,6 +656,13 @@ export class Engine {
     const cc = boxCenter(o.bbox)
     c.save()
     c.globalAlpha = clamp(a.alpha, 0, 1)
+    if (a.rot) {
+      // 회전축은 원래 자리 기준이므로 이동량과 함께 옮긴다
+      const p = a.pivot ?? cc
+      c.translate(p.x + a.dx, p.y + a.dy)
+      c.rotate(a.rot)
+      c.translate(-p.x - a.dx, -p.y - a.dy)
+    }
     c.translate(cc.x + a.dx, cc.y + a.dy)
     c.scale(a.sc, a.sc)
     c.translate(-cc.x, -cc.y)
@@ -631,6 +703,10 @@ export class Engine {
     if (moved.length) out.push('바뀐 객체: ' + moved.join(', '))
     const loops = Object.entries(this.anim).filter(([id, a]) => a.path?.loop && !isEffectId(id))
     if (loops.length) out.push('계속 도는 중(stop id로 멈춤): ' + loops.map(([id]) => id).join(', '))
+    const spins = Object.entries(this.anim).filter(([id, a]) => a.spin && !isEffectId(id))
+    if (spins.length) out.push('회전·왕복 중(stop id로 멈춤): ' + spins.map(([id, a]) => `${id}(${a.spin!.mode === 'spin' ? '회전' : '왕복'})`).join(', '))
+    const turned = Object.entries(this.anim).filter(([id, a]) => !a.spin && a.rot && Math.abs(a.rot) > 0.01 && !isEffectId(id))
+    if (turned.length) out.push('돌려 놓은 객체: ' + turned.map(([id, a]) => `${id}(${r((a.rot! * 180) / Math.PI)}°)`).join(', '))
     const sp = Object.entries(this.spawned).filter(([id]) => !isEffectId(id))
     if (sp.length) out.push('네가 만든 객체: ' + sp.map(([id, s]) => `${id} ${s.shape}${s.text ? ' "' + s.text + '"' : ''} ${s.pts ? `(${r(s.pts[0].x)},${r(s.pts[0].y)})→(${r(s.pts[1].x)},${r(s.pts[1].y)}) 경로로 쓸 수 있음` : `(${r(s.x)},${r(s.y)})`}`).join(', '))
     return out.join('\n') || '(움직이는 것 없음)'

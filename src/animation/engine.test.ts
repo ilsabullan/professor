@@ -209,3 +209,41 @@ describe('겹침 게이트', () => {
     expect(e.validateStep([{ v: 'move', id: 'o1', to: 'o3', dur: 500 }])).toMatch(/겹침/)
   })
 })
+
+describe('회전·되돌리기', () => {
+  it('rotate 값 정리: loop 없이 각도만, 너무 작은 각도는 버림, restore는 id 없이도 된다', () => {
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', deg: 45 })).toEqual({ v: 'rotate', id: 'o1', deg: 45, dur: 700 })
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', deg: 0.2 })).toBeNull()
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', loop: true, about: 'o2' })).toMatchObject({ deg: 30, about: 'o2', loop: true, dur: 2000 })
+    expect(sanitizeOp({ v: 'restore' })).toEqual({ v: 'restore', dur: 700 })
+  })
+
+  it('자전(deg 360 loop)은 한 방향으로 계속 돌고, 이동한 객체를 restore하면 원래 자리로 온다', () => {
+    const { b } = setup()
+    const e = new Engine(b, () => {})
+    e.beginStep()
+    e.applyOp({ v: 'rotate', id: 'o1', deg: 360, loop: true, dur: 1000 }, 0)
+    e.tick(250, .25)
+    expect(e.anim.o1.rot).toBeCloseTo(Math.PI / 2)
+    e.tick(750, .5)
+    expect(e.anim.o1.rot).toBeCloseTo(3 * Math.PI / 2)
+    e.applyOp({ v: 'move', id: 'o2', by: [100, 0], dur: 200 }, 800)
+    e.tick(1100, .3)
+    expect(e.offset('o2').x).toBeCloseTo(100)
+    e.applyOp({ v: 'restore', dur: 200 }, 1200)
+    e.tick(1500, .3)
+    expect(e.offset('o2').x).toBeCloseTo(0)
+    expect(e.anim.o1.spin).toBeUndefined()
+    expect(Math.cos(e.anim.o1.rot!)).toBeCloseTo(1)
+  })
+})
+
+it('"다시 돌아오세요"는 움직인 것이 있을 때만 모델 없이 되돌린다', async () => {
+  const { planRestore, groundSpeech } = await import('./grounding')
+  const { b, e } = setup()
+  const g = groundSpeech(b, '다시 돌아오세요. 다시 돌아오세요.', [], 'r', 'final')
+  expect(planRestore(e, g)).toBeNull()
+  run(e, [{ v: 'move', id: 'o1', by: [50, 0], dur: 100 }])
+  expect(planRestore(e, g)?.ops).toEqual([{ v: 'restore', dur: 700 }])
+  expect(planRestore(e, groundSpeech(b, '응답이 돌아오면', [], 'r', 'final'))).toBeNull()
+})

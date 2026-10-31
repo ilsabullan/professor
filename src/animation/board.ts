@@ -219,6 +219,9 @@ function overlapShare(a: Box, b: Box) {
 
 const lastT = (pts: InkPoint[]) => pts[pts.length - 1]?.t ?? performance.now()
 
+/** 무언가가 따라 움직이는 선의 이름 */
+const PATH_LABEL = /궤도|경로|순환|공전|레일|트랙|길(?!이)|orbit|path/i
+
 /** 편집기에서 온 필기 이벤트를 객체와 사건으로 해석한다 */
 export class Board {
   page: PageInfo = { page: 1, width: 1280, height: 720 }
@@ -288,6 +291,9 @@ export class Board {
   isFlowPath(id: string) {
     if (this.traces.some((t) => t.id === id)) return true
     const o = this.get(id)
+    // 장면 해석이 궤도·경로라고 이름 붙인 그림 (실측: 타원으로 그린 공전 궤도가 상자/그림이라 흐름이 막혔다)
+    if (o && !this.underlineOf(id) && (o.role === 'drawing' || o.role === 'box' || o.role === 'connector' || !o.role)
+      && o.label && PATH_LABEL.test(o.label) && o.strokes.some((s) => s.pts.length > 2)) return true
     if (!o || o.kind !== 'line' || !o.pts || this.underlineOf(id)) return false
     if (o.role) return o.role === 'arrow' || o.role === 'connector'
     if (o.arrowEnd) return true

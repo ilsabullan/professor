@@ -11,10 +11,24 @@ export interface Grounding {
   flow: boolean
   stop: boolean
   sort: boolean
+  /** 움직인 것을 처음 자리로 되돌리라는 말 */
+  restore: boolean
+  /** "안 바뀌겠죠"처럼 움직이지 않는다고 한 말 */
+  negated: boolean
 }
 
 const numberWords: Record<string, string> = { 영: '0', 일: '1', 이: '2', 삼: '3', 사: '4', 오: '5', 육: '6', 칠: '7', 팔: '8', 구: '9' }
-const MOVE = /바[뀌뀔꾸꿀꿔]|교환|옮[기겨]|이동[하해한할시]|(?:앞|뒤)로.{0,8}(가|보내)|넣|꺼내|밀[려리어]|push|pop|enqueue|dequeue/i
+const SWAP = /바[뀌뀔꾸꿀꿔뀝뀐꿉꾼]|교환/
+// 실측(06시~07시)에서 놓친 표현: 바뀝니다·바뀐다·이동했어요·이동을 해볼게요·떨어져·돌아요·움직여줘·왔다 갔다·올라가면·내려와요
+const MOVE = new RegExp([
+  SWAP.source, '옮[기겨긴길]', '이동(?:[하해한할시했되됐됩돼]|을\\s*[해하시]|\\s*$|[.?!,])', '(?:앞|뒤)로.{0,8}(가|보내)', '넣', '꺼내', '밀[려리어]',
+  '떨어[지져진질뜨트]', '움직[여이인일]', '돌[아고면며려리]', '돈다', '도는', '회전', '빙글', '굴러', '흔들', '왔다\\s*갔다', '올라[가와갑간갈]', '내려[가와오갑간갈]',
+  '날아', '튀[어었]', '당[겨기]', '되돌', '제자리', 'push', 'pop', 'enqueue', 'dequeue',
+].join('|'), 'i')
+/** "안 바뀌겠죠", "못 옮겨요"처럼 움직이지 않는다는 말 (실측: "안 바뀌겠더라"에 5·8을 교환함) */
+const NEGATED = /바꾸지|바뀌지|옮기지|움직이지|교환.{0,6}(없|않)|그대로|아직|하지\s*마|(?:안|못)\s*(?:바[뀌뀔꾸꿀꿔뀝뀐꿉]|옮|움직|떨어|돌|이동|교환|내려|올라)/
+/** 처음 자리로 되돌리기 (실측: "다시 돌아오세요"를 표현할 동작이 없었음) */
+const RESTORE = /되돌|원래\s*(?:자리|대로|위치|상태)|제자리|다시\s*돌아|돌아\s*(?:와|오|가)|처음\s*(?:자리|상태)로/
 
 /** 독립된 수/조사 붙은 수만 읽는다. '과일', '사회', '오른쪽' 안의 글자는 숫자가 아니다. */
 export function mentionedValues(text: string): string[] {
@@ -46,10 +60,10 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   const freshFocus = focus.filter((id) => values.some((o) => o.id === id))
   let targets = named
   if (named.length === 1 && freshFocus.includes(named[0])) targets = freshFocus
-  else if (!named.length && (compare || /둘|서로|자리|뒤로|앞으로|바[뀌뀔꾸꿀꿔]|교환/.test(actionText))) targets = freshFocus
+  else if (!named.length && (compare || /둘|서로|자리|뒤로|앞으로/.test(actionText) || SWAP.test(actionText))) targets = freshFocus
   // 새 비교를 특정하지 못했다면 이전 쌍으로 잘못 넘기지 않는다.
   if (!ordinals.length && compare && mentions.length >= 2 && named.length !== mentions.length) targets = []
-  const negated = /(바꾸지|바뀌지|옮기지|움직이지|교환.{0,6}(없|않)|그대로|아직|하지\s*마)/.test(actionText)
+  const negated = NEGATED.test(actionText)
   const sort = !negated && /정[렬리]|조율/.test(text) && /(완료|완성|끝까지|끝나|최종)/.test(text)
   const move = !negated && (sort || MOVE.test(actionText))
   if (/버블|인접/.test(board.page.text ?? '')) {
@@ -67,8 +81,9 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
     }
   }
   return {
-    id, phase, text, targets, move, sort,
-    flow: /(흘러|흐르|흐름|보내|전송|이동|지나가|들어가|들어와|퍼져|퍼지|전달|돌아와|순환)/.test(text),
+    id, phase, text, targets, move, sort, negated,
+    restore: !negated && RESTORE.test(text),
+    flow: /(흘러|흐르|흐름|보내|전송|이동|지나가|들어가|들어와|퍼져|퍼지|전달|돌아와|순환|돌[아고면며]|돈다|도는|공전|회전|굴러)/.test(text),
     stop: /(멈춰|멈추|멈춘|정지|끊기|끊겨|끊어)/.test(text),
   }
 }
@@ -78,7 +93,7 @@ export function planNumericSwap(board: Board, engine: Engine, g: Grounding): { o
   if (!g.move || g.sort || g.targets.length !== 2) return null
   const [a, b] = g.targets.map((id) => board.values().find((o) => o.id === id))
   if (!a || !b || ![a, b].every((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))) return null
-  const explicitSwap = /바[뀌뀔꾸꿀꿔]|교환/.test(g.text)
+  const explicitSwap = SWAP.test(g.text)
   const adjacentSort = /버블|인접/.test(board.page.text ?? '') && /뒤로|앞으로/.test(g.text)
   if (!explicitSwap && !adjacentSort) return null
   const pa = engine.settled(a.id)!, pb = engine.settled(b.id)!
@@ -102,10 +117,15 @@ export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: Ga
   const strict = mode === 'strict'
   const minimal = mode === 'minimal'
   if (!minimal && g.phase === 'preview' && ops.some((op) => op.v !== 'pulse' && op.v !== 'color')) return '말이 아직 확정되지 않음'
+  if (strict && ops.some((op) => op.v === 'rotate') && !g.move) return '돌리라는 입력이 없음'
+  if (strict && ops.some((op) => op.v === 'restore') && !g.restore && !g.move) return '되돌리라는 입력이 없음'
   const moves = ops.filter((op) => op.v === 'move')
   if (moves.length) {
     if (strict && !g.move) return '이동을 지시한 입력이 없음'
     if (moves.some((op) => board.underlineOf(op.id) || (typeof op.to === 'string' && board.underlineOf(op.to)))) return '밑줄은 이동할 값이 아님'
+    // 말한 방향과 반대로 미는 것 (실측: 오른쪽으로 옮기자는 말에 포물선을 왼쪽으로 -96 밀었다)
+    const right = /오른쪽/.test(g.text), left = /왼쪽/.test(g.text)
+    if (right !== left && moves.some((op) => op.by && (right ? op.by[0] < -10 : op.by[0] > 10))) return '말한 방향과 반대로 이동'
     const numeric = board.values().filter((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))
     const movedNumbers = moves.filter((op) => numeric.some((o) => o.id === op.id))
     // 숫자끼리 자리를 바꿀 때 다른 줄로 보내지 않는다 (실측: 배열 위에 따로 쓴 "8"과 1을 바꿔 1이 튐)
@@ -130,6 +150,34 @@ export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: Ga
   return null
 }
 
+/**
+ * "원래대로/다시 돌아와"라고 분명히 말했고 움직인 것이 있으면 모델 없이 되돌린다
+ * (실측: 모델이 restore 대신 교환을 다시 써서 '이동할 값이 특정되지 않음'으로 막혔다)
+ */
+export function planRestore(engine: Engine, g: Grounding): { ops: Op[]; cap: string } | null {
+  if (!g.restore || !/되돌|원래|제자리|다시\s*돌아/.test(g.text)) return null
+  return engine.changed().length ? { ops: [{ v: 'restore', dur: 700 }], cap: '처음 자리로 되돌림' } : null
+}
+
+/** 상태를 바꾸는 동작. 교환의 한쪽만 실행되지 않게 묶음 단위로만 통과시킨다 */
+const STATE_CHANGE = new Set<Op['v']>(['move', 'rotate', 'restore'])
+const DECORATION = new Set<Op['v']>(['pulse', 'color', 'label'])
+
+/**
+ * 근거 없는 동작만 빼고 나머지는 살린다 (실측: 궤도 흐름 하나가 막히면서 맞는 지구 공전 이동까지 버려졌다).
+ * 상태를 바꾸는 동작이 막히거나, 남은 것이 강조뿐인데 핵심 동작이 빠지면 단계 전체를 막는다.
+ */
+export function keepGrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): { ops: Op[]; dropped: Op[]; reason: string | null } {
+  const reason = rejectUngrounded(ops, g, board, mode)
+  if (!reason) return { ops, dropped: [], reason: null }
+  const kept = ops.filter((op) => !rejectUngrounded([op], g, board, mode))
+  const dropped = ops.filter((op) => !kept.includes(op))
+  const lost = dropped.some((op) => STATE_CHANGE.has(op.v))
+    || (kept.every((op) => DECORATION.has(op.v)) && dropped.some((op) => !DECORATION.has(op.v)))
+  if (!kept.length || lost || rejectUngrounded(kept, g, board, mode)) return { ops: [], dropped: ops, reason }
+  return { ops: kept, dropped, reason }
+}
+
 /** 명시적인 전체 정렬 요청에서만 사용. 값이 불명확하거나 여러 행이면 모델에 맡긴다. */
 export function planNumericSort(board: Board, engine: Engine, text: string): { ops: Op[]; cap: string } | null {
   const values = board.values()
@@ -138,7 +186,11 @@ export function planNumericSort(board: Board, engine: Engine, text: string): { o
   const row = numbers.map((o) => ({ o, p: engine.settled(o.id)!, v: Number(o.read ?? o.text) })).sort((a, b) => a.p.x - b.p.x)
   const h = Math.max(...numbers.map((o) => o.bbox.h))
   if (Math.max(...row.map((r) => r.p.y)) - Math.min(...row.map((r) => r.p.y)) > h * .6) return null
-  if (values.some((o) => !numbers.includes(o) && Math.abs(engine.settled(o.id)!.y - row[0].p.y) < h * .6)) return null
+  // 줄 끝의 읽지 않은 가는 세로 획은 배열 테두리다 (실측 064132: 장면 해석 전의 왼쪽 테두리 o1 때문에 정렬을 못 함)
+  const [minX, maxX] = [row[0].p.x, row[row.length - 1].p.x]
+  const border = (o: (typeof values)[number]) => !o.read && !o.text && o.bbox.w < o.bbox.h * .2 && o.bbox.h >= h * .8
+    && (engine.settled(o.id)!.x < minX || engine.settled(o.id)!.x > maxX)
+  if (values.some((o) => !numbers.includes(o) && !border(o) && Math.abs(engine.settled(o.id)!.y - row[0].p.y) < h * .6)) return null
   const direction = /내림|큰\s*값부터|큰\s*수부터/.test(text) ? -1 : 1
   const sorted = [...row].sort((a, b) => direction * (a.v - b.v))
   const ops: Op[] = sorted.flatMap((r, i) => r.o.id === row[i].o.id ? []

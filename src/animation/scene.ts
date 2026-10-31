@@ -17,9 +17,9 @@ role (하나만):
 - connector: 머리 없이 두 객체를 잇는 경로선. from/to
 - frame: 표·배열 칸의 테두리·구분선, 축
 - underline: 글자 아래 강조선. to에 꾸미는 객체
-- drawing: 그림의 일부(심장 윤곽, 혈관, 세포막처럼 무엇을 그린 선). label에 무엇인지
+- drawing: 무언가를 그린 그림의 일부. label에 무엇인지
 - noise: 실수로 찍은 점, 의미 없는 짧은 획
-label: 강의 맥락에서 그 객체가 나타내는 것(10자 이내). 확실할 때만.
+label: 그 객체가 나타내는 것(10자 이내). 교수자의 최근 발화와 강의 자료에 나온 이름을 우선 쓴다(예: 발화에 "진자"·"공"·"궤도"가 나오면 그 이름). 발화·자료에 근거가 없으면 label을 쓰지 않는다. 지구가 도는 길·순환 경로처럼 무엇이 따라 움직이는 선이면 label에 "궤도"·"경로"를 넣는다.
 
 묶기·나누기:
 - merge: 한 글자·단어·도형인데 여러 객체로 쪼개졌으면 묶을 id들(앞 id로 합쳐짐). 확실할 때만.
@@ -32,7 +32,7 @@ const ROLES: SceneRole[] = ['value', 'box', 'arrow', 'connector', 'frame', 'unde
 const r = Math.round
 
 /** 모델에 보내는 객체 목록 (획 id까지) */
-export function describeScene(board: Board): string {
+export function describeScene(board: Board, speech: string[] = []): string {
   const page = board.page
   const lines = board.objs.map((o) => {
     const b = o.bbox
@@ -54,6 +54,8 @@ export function describeScene(board: Board): string {
     `페이지 ${r(page.width)}×${r(page.height)}`,
     page.text ? `강의 자료 글자:\n${page.text.slice(0, 500)}` : '',
     `객체(그린 순서):\n${lines.join('\n')}`,
+    // 실측: 발화 없이 그림만 보고 공을 '사람 머리', 진자를 '세포'로 붙였다
+    speech.length ? `교수자의 최근 발화(오래된→최근, 음성 인식이라 틀릴 수 있음):\n${speech.map((t) => `- ${t}`).join('\n')}` : '',
   ].filter(Boolean).join('\n')
 }
 
@@ -109,6 +111,8 @@ export interface SceneDeps {
   call: (imageB64: string | undefined, text: string, signal: AbortSignal) => Promise<{ text: string; model?: string }>
   snapshot: () => string | undefined
   keep: (id: string) => boolean
+  /** 최근 확정 발화 (그림 이름을 정하는 근거) */
+  speech?: () => string[]
   log: (type: string, data: Record<string, unknown>) => void
   onApplied: (r: { removed: string[]; added: string[] }) => void
   onStatus: () => void
@@ -157,7 +161,7 @@ export class SceneParser {
     this.status.state = 'running'
     this.d.onStatus()
     const t0 = performance.now()
-    const text = describeScene(board)
+    const text = describeScene(board, this.d.speech?.() ?? [])
     const imageB64 = this.d.snapshot()
     this.d.log('scene-request', { id, version, prompt: text, imageB64 })
     let raw = ''
