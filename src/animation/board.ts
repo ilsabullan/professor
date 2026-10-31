@@ -23,6 +23,10 @@ export type ObjKind = 'box' | 'line' | 'mark' | 'dot' | 'text'
 export interface BoardStroke {
   id: string
   pts: InkPoint[]
+  /** 편집기에서 받은 원래 모양. 애니메이션이 넘겨받아 그릴 때 그대로 쓴다 */
+  color?: string
+  width?: number
+  highlight?: boolean
 }
 
 /** 필기를 해석해 묶은 객체. id는 o1, o2 … */
@@ -425,7 +429,7 @@ export class Board {
     const kind = classify(pts, sc)
     const b = bboxOf(pts)
     const diag = Math.hypot(b.w, b.h)
-    const stroke: BoardStroke = { id: s.id, pts }
+    const stroke: BoardStroke = { id: s.id, pts, color: s.color, width: s.width, highlight: s.highlight }
 
     // ① 덧그리기: 이미 있는 선을 따라 다시 그음
     if (kind === 'line' && diag > 40) {

@@ -669,16 +669,25 @@ export class Engine {
     c.translate(cc.x + a.dx, cc.y + a.dy)
     c.scale(a.sc, a.sc)
     c.translate(-cc.x, -cc.y)
-    const ink = this.col(a.color ?? INK)
     if (a.pulse > 0) {
       c.shadowColor = this.col(a.color ?? '#5ec8e6')
       c.shadowBlur = 26 * a.pulse
     }
-    c.strokeStyle = ink
-    c.fillStyle = ink
     c.lineCap = 'round'
     c.lineJoin = 'round'
-    drawStrokes(c, o.strokes.map((s) => s.pts))
+    // AI가 색을 바꾸지 않았으면 쓴 사람의 펜 색·굵기 그대로 그린다
+    for (const s of o.strokes) {
+      const ink = a.color ? this.col(a.color) : s.color ?? this.col(INK)
+      c.strokeStyle = ink
+      c.fillStyle = ink
+      if (s.highlight) {
+        c.save()
+        c.globalAlpha *= 0.5
+        c.globalCompositeOperation = 'multiply'
+        drawStrokes(c, [s.pts], s.width)
+        c.restore()
+      } else drawStrokes(c, [s.pts], s.width)
+    }
     if (o.kind === 'text' && o.text) {
       c.font = `30px ${FONT}`
       c.textBaseline = 'middle'
@@ -712,16 +721,17 @@ export class Engine {
   }
 }
 
-export function drawStrokes(c: CanvasRenderingContext2D, strokes: { x: number; y: number; p: number }[][]) {
+/** width가 있으면 그 굵기로, 없으면 필압에 따라 그린다 */
+export function drawStrokes(c: CanvasRenderingContext2D, strokes: { x: number; y: number; p: number }[][], width?: number) {
   for (const s of strokes) {
     if (s.length === 1) {
       c.beginPath()
-      c.arc(s[0].x, s[0].y, 2.5, 0, Math.PI * 2)
+      c.arc(s[0].x, s[0].y, width ? width / 2 : 2.5, 0, Math.PI * 2)
       c.fill()
       continue
     }
     for (let i = 1; i < s.length; i++) {
-      c.lineWidth = 1.8 + (s[i].p ?? 0.5) * 3.6
+      c.lineWidth = width ?? 1.8 + (s[i].p ?? 0.5) * 3.6
       c.beginPath()
       c.moveTo(s[i - 1].x, s[i - 1].y)
       c.lineTo(s[i].x, s[i].y)

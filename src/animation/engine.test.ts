@@ -237,3 +237,30 @@ describe('eraseAt (지우개로 애니메이션 지우기)', () => {
     expect(e.flows.length).toBe(0)
   })
 })
+
+describe('넘겨받은 필기의 모양', () => {
+  /** stroke()가 불릴 때의 색·굵기를 모은다 */
+  function fakeCtx() {
+    const drawn: { color: string; width: number }[] = []
+    const c: Record<string, unknown> = { globalAlpha: 1, strokeStyle: '', fillStyle: '', lineWidth: 1 }
+    for (const k of ['save', 'restore', 'translate', 'scale', 'beginPath', 'moveTo', 'lineTo', 'arc', 'fill', 'fillText'])
+      c[k] = () => {}
+    c.stroke = () => drawn.push({ color: c.strokeStyle as string, width: c.lineWidth as number })
+    return { c: c as unknown as CanvasRenderingContext2D, drawn }
+  }
+
+  it('쓴 사람의 펜 색과 굵기를 그대로 쓴다 (어두운 슬라이드 위 흰 펜이 검게 바뀌지 않게)', () => {
+    const b = new Board()
+    const pts = Array.from({ length: 25 }, (_, i) => ({ x: 200 + 20 * Math.cos(i / 4), y: 300 + 40 * Math.sin(i / 3), p: 0.5, t: i }))
+    b.apply({ type: 'stroke', stroke: { id: 's1', page: 1, points: pts, color: '#ffffff', width: 6 } })
+    const id = b.objs[0].id
+    const e = new Engine(b, () => {})
+    e.paper = true
+    run(e, [{ v: 'move', id, to: [200, 500], dur: 300 }])
+    const { c, drawn } = fakeCtx()
+    e.render(c)
+    expect(drawn.length).toBeGreaterThan(0)
+    expect(new Set(drawn.map((d) => d.color))).toEqual(new Set(['#ffffff']))
+    expect(new Set(drawn.map((d) => d.width))).toEqual(new Set([6]))
+  })
+})

@@ -25,6 +25,7 @@ export function toInkStroke(s: Stroke, page: Page, pageNumber: number, sessionSt
     points: s.points.map((p) => toInkPoint(p, page, sessionStart)),
     color: s.color,
     width: s.width * BRIDGE_PAGE_WIDTH,
+    ...(s.tool === "highlighter" ? { highlight: true } : {}),
   };
 }
 
