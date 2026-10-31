@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "appId": "ilsabullan-professor",
+  "imageRepository": "ghcr.io/ilsabullan/professor",
+  "displayName": "살아있는 칠판 (교수자)",
+  "description": "PDF 강의 필기 위에 AI 애니메이션 레이어를 얹는 교수자용 화면",
+  "containerPort": 8080,
+  "healthPath": "/healthz",
+  "access": "public",
+  "dataEnabled": false,
+  "resources": {
+    "memoryMiB": 256,
+    "cpus": 1,
+    "pids": 64
+  },
+  "ingressProfile": "standard",
+  "environment": {},
+  "requiredSecrets": ["ILSABULLAN_ACCESS_CODE"],
+  "optionalSecrets": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"],
+  "platform": "linux/arm64",
+  "dockerfile": "Dockerfile",
+  "context": ".",
+  "checks": [
+    ["npm", "run", "typecheck"],
+    ["npm", "test"],
+    ["npm", "run", "build"]
+  ]
+}

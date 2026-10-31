@@ -27,3 +27,15 @@ it('treats tunnelled loopback requests as remote so they need the access code', 
   expect(isDirectLocal('::ffff:127.0.0.1', { 'x-forwarded-for': '203.0.113.7' })).toBe(false)
   expect(isDirectLocal('192.168.0.10', {})).toBe(false)
 })
+
+it('accepts only the exact access code cookie', async () => {
+  const { hasCodeCookie, isAccessCode } = await import('./accessCode')
+  expect(isAccessCode('bd209140')).toBe(true)
+  expect(isAccessCode('short')).toBe(false)
+  expect(isAccessCode('')).toBe(false)
+  expect(hasCodeCookie('a=1; lb_code=bd209140', 'bd209140')).toBe(true)
+  expect(hasCodeCookie('lb_code=bd209141', 'bd209140')).toBe(false)
+  expect(hasCodeCookie('lb_code=bd2091', 'bd209140')).toBe(false)
+  expect(hasCodeCookie(undefined, 'bd209140')).toBe(false)
+  expect(hasCodeCookie('lb_code=', '')).toBe(false)
+})

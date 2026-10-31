@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.DS_Store
+node_modules
+dist
+logs
+cases
+docs
+scripts
+.env
+.env.*
+*.log
+*.tsbuildinfo

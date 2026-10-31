@@ -28,6 +28,15 @@ npm run dev            # https://localhost:5173
 - 필기 화면 왼쪽은 PDF 편집기, 그 페이지 위에 애니메이션이 겹쳐 그려진다.
 - 오른쪽은 애니메이션 테스트 패널(대본, 말하기, 실험 설정, 측정). 상단의 플라스크 버튼으로 켜고 끈다.
 
+## 배포
+
+라즈베리파이 deployd로 배포한다 (`deploy.json`, `Dockerfile`). 주소는 https://ilsabullan-professor.app.hurdoo.kr/?k=<접속 코드>.
+
+- 운영 서버는 `server/prod.ts` (`npm start`). 의존성 없이 `dist/`를 내주고 `/healthz`, `/api/status`, `/api/anthropic/*`, `/api/stt/<업체>`를 처리한다.
+- 공개 주소라서 `/api/*`는 `?k=<접속 코드>`로 한 번 연 기기만 쓸 수 있다.
+- 값은 deployd 대시보드 Secrets에만 넣는다. 필수: `ILSABULLAN_ACCESS_CODE`(16진수 8~64자). 선택: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+- 테스트 기록(`/api/log`)과 원본 녹음은 개발 서버에서만 저장된다.
+
 ## 구조
 
 | 경로 | 내용 |
