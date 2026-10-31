@@ -2,7 +2,8 @@ import { getDevAccessCode } from './server/accessCode.ts'
 import { resolve } from 'node:path'
 import { createLogStore } from './server/logStore.ts'
 import { networkInterfaces } from 'node:os'
-import { defineConfig, loadEnv, type Plugin } from 'vite'
+import type { ClientRequest, IncomingMessage } from 'node:http'
+import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
@@ -13,6 +14,52 @@ function lanAddresses() {
     .flat()
     .filter((n) => n && n.family === 'IPv4' && !n.internal)
     .map((n) => n!.address)
+}
+
+/** 이 Mac 자신이거나 접속 코드 쿠키가 있는 요청 */
+function hasAccess(req: IncomingMessage, code: string) {
+  const cookie = /(?:^|;\s*)lb_code=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+  return isLocal(req.socket.remoteAddress ?? '') || cookie === code
+}
+
+/**
+ * 실시간 받아쓰기 WebSocket 프록시. 브라우저는 /api/stt/<업체>로 연결하고 서버가 키를 붙여 넘긴다.
+ * WebSocket 업그레이드는 미들웨어를 거치지 않으므로 접속 코드는 bypass에서 따로 확인한다.
+ */
+function sttProxy(code: string, env: Record<string, string>): Record<string, ProxyOptions> {
+  const guard = (req: IncomingMessage) => (hasAccess(req, code) ? undefined : false)
+  const strip = (proxyReq: ClientRequest) => {
+    proxyReq.removeHeader('origin')
+    proxyReq.removeHeader('cookie')
+  }
+  return {
+    '/api/stt/openai': {
+      target: 'wss://api.openai.com',
+      ws: true,
+      changeOrigin: true,
+      bypass: guard,
+      rewrite: () => '/v1/realtime?intent=transcription',
+      configure: (proxy) => {
+        proxy.on('proxyReqWs', (proxyReq) => {
+          strip(proxyReq)
+          proxyReq.setHeader('authorization', `Bearer ${env.OPENAI_API_KEY ?? ''}`)
+        })
+      },
+    },
+    '/api/stt/gemini': {
+      target: 'wss://generativelanguage.googleapis.com',
+      ws: true,
+      changeOrigin: true,
+      bypass: guard,
+      rewrite: () => '/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent',
+      configure: (proxy) => {
+        proxy.on('proxyReqWs', (proxyReq) => {
+          strip(proxyReq)
+          proxyReq.setHeader('x-goog-api-key', env.GEMINI_API_KEY ?? '')
+        })
+      },
+    },
+  }
 }
 
 /**
@@ -31,8 +78,7 @@ function accessCode(code: string): Plugin {
           return next()
         }
         if (!url.pathname.startsWith('/api/')) return next()
-        const cookie = /(?:^|;\s*)lb_code=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
-        if (isLocal(req.socket.remoteAddress ?? '') || cookie === code) return next()
+        if (hasAccess(req, code)) return next()
         res.statusCode = 403
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ error: 'access_code_required' }))
@@ -114,6 +160,7 @@ export default defineConfig(({ mode }) => {
       // 같은 와이파이의 다른 기기에서 접속 가능. 마이크·음성 인식 때문에 HTTPS(자체 인증서)
       host: true,
       proxy: {
+        ...sttProxy(code, env),
         '/api/anthropic': {
           target: 'https://api.anthropic.com',
           changeOrigin: true,

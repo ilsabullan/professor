@@ -12,7 +12,7 @@ import { quickFromBoard, quickFromSpeech } from './quick'
 import { describeGrounding, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
 import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
-import { type MicState, SpeechInput } from './speech'
+import { type MicState, SpeechInput, type SttProvider } from './speech'
 
 export interface Settings {
   model: ModelId
@@ -27,6 +27,8 @@ export interface Settings {
   thr: number
   /** 펜을 뗀 뒤 쉬면 장면 해석(LLM)으로 객체의 의미를 정함 */
   scene: boolean
+  /** 받아쓰기: 브라우저 내장 / OpenAI / Gemini 실시간 */
+  stt: SttProvider
 }
 
 export type AiStatus = 'checking' | 'ready' | 'nokey' | 'locked' | 'error'
@@ -68,7 +70,7 @@ export class Pipeline {
   readonly speech: SpeechInput
   readonly scene: SceneParser
 
-  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true }
+  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true, stt: 'browser' }
   aiStatus: AiStatus = 'checking'
   aiNote = ''
   mic: MicState = 'off'
@@ -205,12 +207,13 @@ export class Pipeline {
 
   cfgKey() {
     const s = this.settings
-    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}`
+    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}/듣기:${s.stt}`
   }
 
   update(patch: Partial<Settings>) {
     const rewarm = (patch.model && patch.model !== this.settings.model) || (patch.thinking && patch.thinking !== this.settings.thinking)
     this.settings = { ...this.settings, ...patch }
+    if (patch.stt) this.speech.setProvider(patch.stt)
     this.log('settings', { settings: { ...this.settings } })
     if (rewarm) void this.warm()
     this.notify()
@@ -252,6 +255,7 @@ export class Pipeline {
   // ---------- 입력 ----------
   private handleInk(e: InkEvent) {
     const reset = e.type === 'page' || e.type === 'clear'
+    if (e.type === 'page') this.speech.setPageText(e.info.text)
     if (reset) {
       this.scene.reset()
       this.resetAnimation()

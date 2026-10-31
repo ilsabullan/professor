@@ -136,6 +136,14 @@ export function DevPanel({
               <option value="adaptive">켬 (low)</option>
             </select>
           </label>
+          <label className="opt">
+            받아쓰기
+            <select value={s.stt} onChange={(e) => p.update({ stt: e.target.value as typeof s.stt })}>
+              <option value="browser">브라우저 내장</option>
+              <option value="openai">OpenAI 실시간</option>
+              <option value="gemini">Gemini Live</option>
+            </select>
+          </label>
         </div>
         <div className="row">
           <label className="opt">

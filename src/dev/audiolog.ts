@@ -4,6 +4,8 @@
  * 조각마다 t0~t1(performance.now 기준, final·interim 기록의 t와 같은 시계)을 남기므로
  * 발화 시각 - 녹음 시작 시각(audio-start의 t0)으로 파일 안 위치를 찾을 수 있다.
  */
+import { RAW_AUDIO } from '../animation/cloudstt'
+
 type Log = (type: string, data: Record<string, unknown>) => void
 
 const PART_MS = 5000
@@ -57,7 +59,8 @@ export class AudioLog {
     this.starting = true
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // 받아쓰기(cloudstt)와 같은 원본 설정으로 열어야 장치가 다른 처리 모드로 바뀌지 않는다
+      stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO })
     } catch (err) {
       this.starting = false
       this.failed = true

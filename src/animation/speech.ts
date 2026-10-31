@@ -1,4 +1,7 @@
-/** 브라우저 음성 인식(Web Speech API) 감싸기. 말하는 중(interim)과 확정(final)을 나눠 알려준다 */
+/** 음성 입력. 기본은 브라우저 음성 인식(Web Speech API), 고르면 외부 받아쓰기(cloudstt). 말하는 중(interim)과 확정(final)을 나눠 알려준다 */
+import { CloudSpeech, type Hints, hintsFromPage } from './cloudstt'
+
+export type SttProvider = 'browser' | 'openai' | 'gemini'
 
 interface RecognitionAlternative {
   transcript: string
@@ -61,13 +64,40 @@ export class SpeechInput {
   /** 이번 세션에서 인식 결과를 한 번이라도 받음 */
   private heard = false
 
+  private provider: SttProvider = 'browser'
+  private cloud: CloudSpeech | null = null
+  private hints: Hints = hintsFromPage('')
+
   constructor(private h: SpeechHandlers) {}
 
   static supported() {
     return !!getCtor()
   }
 
+  /** 받아쓰기 방식을 바꾼다. 켜져 있었으면 새 방식으로 다시 켠다 */
+  setProvider(p: SttProvider) {
+    if (p === this.provider) return
+    const on = this.wantOn || !!this.cloud
+    if (on) this.stop()
+    this.provider = p
+    if (on) this.start()
+  }
+
+  /** 페이지가 바뀌면 강의 자료 글자로 용어 힌트를 갱신 (외부 받아쓰기만 사용) */
+  setPageText(text: string | undefined) {
+    this.hints = hintsFromPage(text)
+    this.cloud?.setHints(this.hints)
+  }
+
   start() {
+    if (this.provider !== 'browser') {
+      // 막혔거나 끊긴 이전 연결이 남아 있으면 정리하고 새로 연다
+      this.cloud?.stop()
+      this.cloud = new CloudSpeech(this.provider, this.h, (event, detail) => this.h.onDiagnostic?.(event, detail))
+      this.cloud.setHints(this.hints)
+      void this.cloud.start()
+      return
+    }
     if (this.wantOn && this.rec) return
     clearTimeout(this.restartTimer)
     this.retries = 0
@@ -161,6 +191,12 @@ export class SpeechInput {
   }
 
   stop() {
+    if (this.cloud) {
+      const c = this.cloud
+      this.cloud = null
+      c.stop()
+      return
+    }
     this.wantOn = false
     clearTimeout(this.restartTimer)
     this.lastInterimAt = 0
