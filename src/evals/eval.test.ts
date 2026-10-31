@@ -108,6 +108,10 @@ async function runOnce(c: Case) {
   let moved: string[] = []
   let before = ''
   p.log = (type, data) => {
+    if (process.env.EVAL_DEBUG && ['rejected', 'final', 'final-dup', 'request'].includes(type)) {
+      const d = data as Record<string, any>
+      console.log('DBG', type, type === 'request' ? `${d.rec?.kind} ${d.rec?.status} | ${String(d.raw ?? '').replace(/\n/g, ' / ').slice(0, 160)}` : JSON.stringify(type === 'rejected' ? { reason: d.reason, ops: d.ops } : d).slice(0, 200))
+    }
     if (type === 'applied') for (const op of data.ops as { v: string; id?: string }[]) {
       if (op.v === 'move' && op.id) moved.push(op.id)
     }

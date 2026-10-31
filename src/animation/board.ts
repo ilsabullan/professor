@@ -451,6 +451,24 @@ export class Board {
 
     // 곧추선 직선이 다른 선에 닿지 않고 떠 있으면 숫자 1 같은 글자 (구분선은 테두리에 닿아 있다)
     const k = kind === 'line' && this.floatingUpright(pts, b) ? 'mark' : kind
+
+    // ④ 덧쓰기: 이미 있는 손글씨 위에 크게 겹쳐 쓴 획은 새 글자가 아니라 그 글자에 더한 것
+    // (실측: 3을 다시 써서 3이 두 개가 되자 교환 대상이 엇갈려 5↔3이 계속 막혔다)
+    if (k === 'mark' || k === 'dot') {
+      const area = Math.max(1, b.w * b.h)
+      const host = this.objs.find((o) => {
+        if (o.kind !== 'mark') return false
+        const iw = Math.min(o.bbox.x + o.bbox.w, b.x + b.w) - Math.max(o.bbox.x, b.x)
+        const ih = Math.min(o.bbox.y + o.bbox.h, b.y + b.h) - Math.max(o.bbox.y, b.y)
+        return iw > 0 && ih > 0 && iw * ih >= 0.5 * area
+      })
+      if (host) {
+        host.strokes.push(stroke)
+        host.bbox = unionBox(host.bbox, b)
+        host.t = t
+        return { kind: '획', desc: `손글씨 ${host.id}에 덧씀`, t, objId: host.id }
+      }
+    }
     const o: BoardObj = { id: this.newId(), kind: k, strokes: [stroke], bbox: b, t }
     if (k === 'line') o.pts = simplify(pts, 24)
     this.objs.push(o)

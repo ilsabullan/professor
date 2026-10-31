@@ -171,13 +171,25 @@ export class Engine {
       goals.set(op.id, to)
     }
     const values = this.board.values()
+    type V = (typeof values)[number]
+    const overlap = (a: V, b: V, pa: Pt, pb: Pt) => {
+      const iw = Math.min(pa.x + a.bbox.w / 2, pb.x + b.bbox.w / 2) - Math.max(pa.x - a.bbox.w / 2, pb.x - b.bbox.w / 2)
+      const ih = Math.min(pa.y + a.bbox.h / 2, pb.y + b.bbox.h / 2) - Math.max(pa.y - a.bbox.h / 2, pb.y - b.bbox.h / 2)
+      return iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.bbox.w * a.bbox.h, b.bbox.w * b.bbox.h)
+    }
+    // 이동 전부터 이미 다른 값과 겹쳐 있던 객체(덧쓴 숫자 등)는 겹침 판정에서 뺀다.
+    // 실측: 3을 한 번 더 써서 생긴 o13 때문에 맞는 5↔3 교환이 네 번 연속 막혔다
+    const cluttered = new Set<string>()
+    for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) {
+      const a = values[i], b = values[j]
+      const pa = positions.get(a.id), pb = positions.get(b.id)
+      if (pa && pb && overlap(a, b, pa, pb)) cluttered.add(a.id).add(b.id)
+    }
     for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) {
       const a = values[i], b = values[j]
       if (!moved.has(a.id) && !moved.has(b.id)) continue
-      const pa = goals.get(a.id)!, pb = goals.get(b.id)!
-      const iw = Math.min(pa.x + a.bbox.w / 2, pb.x + b.bbox.w / 2) - Math.max(pa.x - a.bbox.w / 2, pb.x - b.bbox.w / 2)
-      const ih = Math.min(pa.y + a.bbox.h / 2, pb.y + b.bbox.h / 2) - Math.max(pa.y - a.bbox.h / 2, pb.y - b.bbox.h / 2)
-      if (iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.bbox.w * a.bbox.h, b.bbox.w * b.bbox.h)) return `이동 후 겹침: ${a.id}, ${b.id}`
+      if ((cluttered.has(a.id) && !moved.has(a.id)) || (cluttered.has(b.id) && !moved.has(b.id))) continue
+      if (overlap(a, b, goals.get(a.id)!, goals.get(b.id)!)) return `이동 후 겹침: ${a.id}, ${b.id}`
     }
     return null
   }
