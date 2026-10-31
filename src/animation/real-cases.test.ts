@@ -6,12 +6,14 @@ import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { groundSpeech, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
+import type { SceneResult } from './board'
 import { parseScene } from './scene'
 import type { InkEvent } from '../shared/ink'
 
 interface RecordedCase {
   events: InkEvent[]
-  inputs: { n: number; at: number; type: string; event?: InkEvent; text?: string; raw?: string }[]
+  /** scene 입력의 ids·after: 실측 당시 객체 번호별 획 (해석 요청 때, 반영 직후) */
+  inputs: { n: number; at: number; type: string; event?: InkEvent; text?: string; raw?: string; ids?: Record<string, string[]>; after?: Record<string, string[]> }[]
   failures: { n: number; request?: { kind: string; desc: string; raw: string } }[]
 }
 const fixture = (name: string): RecordedCase => JSON.parse(readFileSync(new URL(`../../cases/${name}.json`, import.meta.url), 'utf8'))
@@ -92,15 +94,33 @@ describe('최신 실측 회귀', () => {
 })
 
 
+/** 실측 당시 객체 번호 → 같은 획을 가진 지금 칠판의 객체 번호. Board 휴리스틱이 바뀌어 번호가 밀려도 맞춘다 */
+const idMap = (b: Board, ids: Record<string, string[]> = {}) => (id: string) => {
+  const sid = ids[id]?.[0]
+  return (sid && b.objs.find((o) => o.strokes.some((s) => s.id === sid))?.id) || id
+}
+
+const remapScene = (r: SceneResult, f: (id: string) => string): SceneResult => ({
+  objs: Object.fromEntries(Object.entries(r.objs).map(([id, s]) => [f(id), { ...s, from: s.from && f(s.from), to: s.to && f(s.to) }])),
+  merge: r.merge.map((g) => [...new Set(g.map(f))]).filter((g) => g.length >= 2),
+  split: Object.fromEntries(Object.entries(r.split).map(([id, g]) => [f(id), g])),
+})
+
 /** 실측 기록에서 n번 이벤트 직전까지의 필기와 반영된 장면 해석으로 만든 칠판 */
 const boardAt = (c: RecordedCase, n: number) => {
   const b = new Board()
   for (const e of c.inputs.filter((x) => x.n < n)) {
     if (e.type === 'ink') b.apply(e.event!)
-    else if (e.type === 'scene') b.applyScene(parseScene(e.raw!)!)
+    else if (e.type === 'scene') b.applyScene(remapScene(parseScene(e.raw!)!, idMap(b, e.ids)))
   }
   return b
 }
+
+/** n번 이벤트 때 AI가 본 객체 번호(마지막 장면 해석 직후 기준)를 지금 칠판 번호로 */
+const realIds = (c: RecordedCase, b: Board, n: number) =>
+  idMap(b, c.inputs.filter((x) => x.type === 'scene' && x.n < n).at(-1)?.after)
+const remapOps = (ops: Op[], f: (id: string) => string): Op[] =>
+  JSON.parse(JSON.stringify(ops).replace(/"(o\d+)"/g, (_, id: string) => JSON.stringify(f(id))))
 const opsOf = (raw: string) => parseProgress(raw + '\n').steps[0].ops.map(sanitizeOp) as Op[]
 
 describe('04시 실측 회귀', () => {
@@ -129,9 +149,11 @@ describe('04시 실측 회귀', () => {
     const c = fixture('real-sort-040451')
     const f = c.failures.find((x) => x.n === 2017)!
     const b = boardAt(c, f.n)
-    for (const [id, read] of Object.entries({ o6: '5', o7: '3', o8: '8', o9: '1', o16: '8' })) b.get(id)!.read = read
-    const g = groundSpeech(b, '일 보다 크니까 뒤로 가겠죠', ['o9', 'o16'], 'swap', 'final')
-    expect(rejectUngrounded(opsOf(f.request!.raw), { ...g, targets: ['o9', 'o16'] }, b)).toBe('다른 줄의 값과 교환')
+    const id = realIds(c, b, f.n)
+    for (const [rid, read] of Object.entries({ o6: '5', o7: '3', o8: '8', o9: '1', o16: '8' })) b.get(id(rid))!.read = read
+    const targets = [id('o9'), id('o16')]
+    const g = groundSpeech(b, '일 보다 크니까 뒤로 가겠죠', targets, 'swap', 'final')
+    expect(rejectUngrounded(remapOps(opsOf(f.request!.raw), id), { ...g, targets }, b)).toBe('다른 줄의 값과 교환')
   })
 
   it('04:25 장면 해석이 서로 다른 값 5와 3을 합치라고 해도 따로 둔다', () => {

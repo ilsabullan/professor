@@ -158,7 +158,7 @@ export function DevPanel({
             <input type="checkbox" checked={s.quick} onChange={(e) => p.update({ quick: e.target.checked })} /> 즉시 반응
           </label>
           <label className="opt">
-            <input type="checkbox" checked={s.early} onChange={(e) => p.update({ early: e.target.checked })} /> 말 끝나기 전 미리 부르기
+            <input type="checkbox" checked={s.early} onChange={(e) => p.update({ early: e.target.checked })} /> 말 멈추면 바로 확정
           </label>
           <label className="opt">
             <input type="checkbox" checked={s.scene} onChange={(e) => p.update({ scene: e.target.checked })} /> 장면 해석

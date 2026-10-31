@@ -169,3 +169,43 @@ describe('반복 이동과 화살표 만들기', () => {
     expect(e.center('p2')!.x).toBe(stopped)
   })
 })
+
+describe('선을 따라 이동 (along)', () => {
+  /** 아래쪽 가로선(축): (100,600)→(300,600) */
+  const axis = (b: Board) => {
+    const pts = Array.from({ length: 21 }, (_, i) => ({ x: 100 + i * 10, y: 600, p: 0.5, t: i }))
+    b.objs.push({ id: 'ax', kind: 'line', strokes: [{ id: 'sax', pts }], bbox: { x: 100, y: 600, w: 200, h: 1 }, pts, t: 0 })
+  }
+
+  it('선에서 떨어진 물체는 선 위로 올라타지 않고 선의 방향·길이만큼 제자리에서 옮겨진다 (실측: 그래프가 축으로 뛰어감)', () => {
+    const { b, e } = setup()
+    axis(b)
+    e.beginStep()
+    e.applyOp({ v: 'move', id: 'o1', along: 'ax', dur: 500 }, 0)
+    e.tick(10_000, 0.05)
+    expect(e.settled('o1')).toEqual({ x: 400, y: 300 })
+  })
+
+  it('사전 검사도 실제로 갈 자리로 겹침을 본다 (선 끝 (300,600)이 아니라 옮긴 끝 (400,300) = o2 자리)', () => {
+    const { b, e } = setup()
+    axis(b)
+    expect(e.validateStep([{ v: 'move', id: 'o1', along: 'ax', dur: 500 }])).toMatch(/겹침: o1, o2/)
+  })
+})
+
+describe('겹침 게이트', () => {
+  const swapOps = [
+    { v: 'move' as const, id: 'o1', to: 'o2', dur: 500 },
+    { v: 'move' as const, id: 'o2', to: 'o1', dur: 500 },
+  ]
+  it('3 자리에 덧쓴 3(o3)이 원래 겹쳐 있어도 5↔3 교환을 막지 않는다 (실측 055444)', () => {
+    const { b, e } = setup()
+    b.objs.push({ id: 'o3', kind: 'mark', strokes: [{ id: 'so3', pts: [{ x: 405, y: 300, p: 0.5, t: 0 }] }], bbox: { x: 385, y: 265, w: 40, h: 80 }, t: 0 })
+    expect(e.validateStep(swapOps)).toBeNull()
+  })
+  it('원래 떨어져 있던 값과 새로 겹치게 되는 이동은 막는다', () => {
+    const { b, e } = setup()
+    b.objs.push({ id: 'o3', kind: 'mark', strokes: [{ id: 'so3', pts: [{ x: 600, y: 300, p: 0.5, t: 0 }] }], bbox: { x: 580, y: 260, w: 40, h: 80 }, t: 0 })
+    expect(e.validateStep([{ v: 'move', id: 'o1', to: 'o3', dur: 500 }])).toMatch(/겹침/)
+  })
+})

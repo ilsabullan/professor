@@ -19,6 +19,16 @@ export function isClosedPath(pts: Pt[]) {
   return dist(pts[0], pts[pts.length - 1]) < Math.max(30, pathLen(pts) * 0.15)
 }
 
+/**
+ * 선을 따라 이동할 실제 경로. 물체가 선 위(근처)에 있으면 선을 타고 가고, 떨어져 있으면 선의 모양대로
+ * 제자리에서 같은 만큼 옮긴다 (그래프를 x축 "방향으로" 옮기라는데 그래프가 축 위로 뛰어가던 문제).
+ * 사전 검사와 실행이 같은 도착지를 보도록 둘 다 이것을 쓴다.
+ */
+export function alongPath(line: Pt[], from: Pt): Pt[] {
+  const onLine = line.some((q) => dist(q, from) < 40)
+  return onLine ? line : line.map((q) => ({ x: q.x - line[0].x + from.x, y: q.y - line[0].y + from.y }))
+}
+
 interface AnimState {
   dx: number
   dy: number
@@ -190,8 +200,9 @@ export class Engine {
       if (op.by && Math.hypot(op.by[0], op.by[1]) < 10) return `이동량이 너무 작음: ${op.id}`
       // 자기 선을 따라 자기를 옮기는 것은 의미가 없다 (실측: 포물선 평행이동을 이렇게 써서 엉뚱하게 움직임)
       if (op.along === op.id) return `자기 자신을 따라 이동: ${op.id}`
-      const path = op.along ? this.linePts(op.along) : null
       const at = positions.get(op.id)!
+      const line = op.along ? this.linePts(op.along) : null
+      const path = line ? alongPath(line, at) : null
       if (op.loop && !path) return '유효한 도착지가 없음'
       // 반복 이동은 결국 제자리로 돌아오므로 겹침 판단은 지금 자리 기준
       const to = op.loop ? at : op.along ? path?.at(-1) : op.by ? { x: at.x + op.by[0], y: at.y + op.by[1] } : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
@@ -199,13 +210,25 @@ export class Engine {
       goals.set(op.id, to)
     }
     const values = this.board.values()
+    type V = (typeof values)[number]
+    const overlap = (a: V, b: V, pa: Pt, pb: Pt) => {
+      const iw = Math.min(pa.x + a.bbox.w / 2, pb.x + b.bbox.w / 2) - Math.max(pa.x - a.bbox.w / 2, pb.x - b.bbox.w / 2)
+      const ih = Math.min(pa.y + a.bbox.h / 2, pb.y + b.bbox.h / 2) - Math.max(pa.y - a.bbox.h / 2, pb.y - b.bbox.h / 2)
+      return iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.bbox.w * a.bbox.h, b.bbox.w * b.bbox.h)
+    }
+    // 이동 전부터 이미 다른 값과 겹쳐 있던 객체(덧쓴 숫자 등)는 겹침 판정에서 뺀다.
+    // 실측: 3을 한 번 더 써서 생긴 o13 때문에 맞는 5↔3 교환이 네 번 연속 막혔다
+    const cluttered = new Set<string>()
+    for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) {
+      const a = values[i], b = values[j]
+      const pa = positions.get(a.id), pb = positions.get(b.id)
+      if (pa && pb && overlap(a, b, pa, pb)) cluttered.add(a.id).add(b.id)
+    }
     for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) {
       const a = values[i], b = values[j]
       if (!moved.has(a.id) && !moved.has(b.id)) continue
-      const pa = goals.get(a.id)!, pb = goals.get(b.id)!
-      const iw = Math.min(pa.x + a.bbox.w / 2, pb.x + b.bbox.w / 2) - Math.max(pa.x - a.bbox.w / 2, pb.x - b.bbox.w / 2)
-      const ih = Math.min(pa.y + a.bbox.h / 2, pb.y + b.bbox.h / 2) - Math.max(pa.y - a.bbox.h / 2, pb.y - b.bbox.h / 2)
-      if (iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.bbox.w * a.bbox.h, b.bbox.w * b.bbox.h)) return `이동 후 겹침: ${a.id}, ${b.id}`
+      if ((cluttered.has(a.id) && !moved.has(a.id)) || (cluttered.has(b.id) && !moved.has(b.id))) continue
+      if (overlap(a, b, goals.get(a.id)!, goals.get(b.id)!)) return `이동 후 겹침: ${a.id}, ${b.id}`
     }
     return null
   }
@@ -356,8 +379,9 @@ export class Engine {
         this.tweens = this.tweens.filter((w) => w.owner !== op.id)
         a.path = null
         if (op.along) {
-          const pts = this.linePts(op.along)
-          if (!pts) return 0
+          const line = this.linePts(op.along)
+          if (!line) return 0
+          const pts = alongPath(line, from)
           const end = pts[pts.length - 1]
           const base = sp ? { x: 0, y: 0 } : { x: from.x - this.offset(op.id).x, y: from.y - this.offset(op.id).y }
           // 반복은 경로에서 지금 자리와 가장 가까운 곳부터 시작한다 (시작점으로 순간이동하지 않게)

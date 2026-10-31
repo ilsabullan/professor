@@ -50,7 +50,8 @@ interface Inflight {
 
 /** 계기별로 AI를 부르기 전 기다리는 시간(ms). 짧을수록 빠르고, 연달아 오는 입력은 하나로 묶는다 */
 const DELAY: Record<string, number> = {
-  획: 80,
+  // 그냥 획은 펜이 멈추면 한 번만 (획마다 부르면 숫자 한 글자에 세 번씩 불렀다)
+  획: 1200,
   글자: 0,
   화살표: 0,
   덧그리기: 0,
@@ -75,6 +76,13 @@ export function swapKey(ops: Op[]): string | null {
 
 /** 여러 입력을 묶을 때 계기 이름은 더 강한 신호로 */
 export const shortModel = (m: ModelId) => (m === 'claude-haiku-5-5' ? 'Haiku 5.5' : 'Sonnet 5.5')
+
+/** 받아쓰기 글자가 이만큼 그대로면 문장이 끝난 것으로 본다. 실측 받아쓰기는 문장 중간에도 0.65초씩 멈춰서 0.9초 */
+export const PAUSE_MS = 900
+
+/** 이 말로 끝나면 멈춤을 기다리지 않고 바로 확정 (동작을 마무리하는 말) */
+export const ACTION_END =
+  /(바꿔요|바꿉니다|바꿀게요|바꾸죠|바뀌어요|바뀝니다|바뀌죠|바뀔 거예요|옮겨요|옮깁니다|옮길게요|옮기죠|교환해요|교환합니다|교환하죠|이동해요|이동합니다|흘러가요|흘러가죠|흘러요|보내요|보냅니다|넣어요|넣습니다|빼요|꺼내요|밀려요|밀려나요|올라가요|내려가요|떨어져요|멈춰요|끊겨요)[.!?\s]*$/
 
 export class Pipeline {
   readonly board = new Board()
@@ -117,8 +125,11 @@ export class Pipeline {
   private focus: { ids: string[]; t: number } = { ids: [], t: 0 }
   /** 마지막으로 실행한 두 값 교환. 같은 말을 되풀이해 원래대로 되돌리는 것을 막는다 */
   private lastSwap: { key: string; t: number } | null = null
-  private lastEarlyLen = 0
-  private interimDirty = false
+  /** 멈춤 확정: 받아쓰기가 이 시간 동안 그대로면 우리가 문장을 확정한다 */
+  private commitTimer: ReturnType<typeof setTimeout> | undefined
+  /** 지금 받아쓰기 덩어리에서 이미 확정한 앞부분 (브라우저가 같은 덩어리를 계속 늘려 보낸다) */
+  private committedRaw = ''
+  private interimAt = 0
   private lastCallAt = 0
   private listeners = new Set<() => void>()
   private version = 0
@@ -222,7 +233,7 @@ export class Pipeline {
 
   cfgKey() {
     const s = this.settings
-    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}/듣기:${s.stt}/규칙:${s.gate}`
+    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '멈춤확정' : '브라우저확정'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}/듣기:${s.stt}/규칙:${s.gate}`
   }
 
   update(patch: Partial<Settings>) {
@@ -312,22 +323,75 @@ export class Pipeline {
     return ms
   }
 
+  /**
+   * 받아쓰기 중간 결과. AI는 부르지 않고(요청 폭주 방지), 문장이 끝났는지만 본다.
+   * - 동작 말("바꿔요/옮겨요/흘러가요"…)로 끝나면 바로 확정
+   * - 아니면 PAUSE_MS 동안 글자가 그대로일 때 확정 (브라우저가 확정을 미뤄도 넘어가게)
+   */
   onInterim(text: string, t: number) {
-    this.interim = text.trim()
-    this.log('interim', { text: this.interim })
-    if (this.settings.early && this.interim.length - this.lastEarlyLen >= 4) {
-      this.lastEarlyLen = this.interim.length
-      this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t,
-        grounding: this.speechGrounding(this.interim, t, 'preview') })
+    const raw = text.trim()
+    const rest = this.afterCommitted(raw)
+    this.interim = rest
+    this.interimAt = t
+    this.log('interim', { text: rest, raw })
+    clearTimeout(this.commitTimer)
+    if (rest && this.settings.early) {
+      if (ACTION_END.test(rest)) this.commitInterim(raw, 'action')
+      else this.commitTimer = setTimeout(() => this.commitInterim(raw, 'pause'), PAUSE_MS)
     }
     this.notifySoon()
   }
 
+  /** 브라우저가 보낸 확정. 이미 멈춤 확정한 앞부분은 잘라낸다 */
   onFinal(text: string, tEnd: number) {
+    clearTimeout(this.commitTimer)
+    const rest = this.afterCommitted(text.trim())
+    this.committedRaw = ''
+    if (!rest) {
+      this.log('final-dup', { text: text.trim() })
+      this.interim = ''
+      this.notifySoon()
+      return
+    }
+    this.finalize(rest, tEnd, 'browser')
+  }
+
+  private commitInterim(raw: string, why: 'pause' | 'action') {
+    const rest = this.afterCommitted(raw)
+    if (!rest) return
+    this.committedRaw = raw
+    this.finalize(rest, this.interimAt || performance.now(), why)
+  }
+
+  /** raw 가 이미 확정한 덩어리로 시작하면 그 뒤만. 새 덩어리면 확정 기록을 비우고 전체 */
+  private afterCommitted(raw: string) {
+    if (!this.committedRaw) return raw
+    const key = (s: string) => s.replace(/[\s.,!?~…]/g, '')
+    const done = key(this.committedRaw)
+    const now = key(raw)
+    if (!now.startsWith(done)) {
+      // 받아쓰기가 앞부분을 고쳐 쓴 경우("을"→"의")는 같은 덩어리로 본다: 같은 자리 글자가 70% 이상 같으면 확정한 길이만큼 자른다
+      let same = 0
+      for (let k = 0; k < done.length && k < now.length; k++) if (done[k] === now[k]) same++
+      if (same < 0.7 * done.length || now.length < done.length) {
+        this.committedRaw = ''
+        return raw
+      }
+    }
+    let seen = 0
+    let i = 0
+    while (i < raw.length && seen < done.length) {
+      if (!/[\s.,!?~…]/.test(raw[i])) seen++
+      i++
+    }
+    // 남은 게 문장부호뿐이면(브라우저 확정 끝의 ".") 새 말이 아니다
+    return raw.slice(i).replace(/^[\s.,!?~…]+/, '').trim()
+  }
+
+  private finalize(text: string, tEnd: number, why: 'pause' | 'action' | 'browser') {
     const final = text.trim()
-    this.log('final', { text: final })
+    this.log('final', { text: final, why })
     this.interim = ''
-    this.lastEarlyLen = 0
     if (!final) {
       this.firedRules.clear()
       return
@@ -335,7 +399,6 @@ export class Pipeline {
     // 미완성 발화는 강조만 했다. 확정 발화는 한 개의 새로운 실행 단위다.
     clearTimeout(this.timer)
     this.pending = null
-    this.interimDirty = false
     this.abortInflight('중단(확정 발화)')
     this.player.cancelPending()
     const grounding = this.speechGrounding(final, tEnd, 'final')
@@ -359,7 +422,9 @@ export class Pipeline {
   /** 받아쓰기 칸 등에서 문장을 직접 넣을 때 */
   say(text: string) {
     const t = performance.now()
-    this.onFinal(text, t)
+    clearTimeout(this.commitTimer)
+    this.committedRaw = ''
+    this.finalize(text, t, 'browser')
   }
 
   private schedule(trig: Trigger) {
@@ -367,7 +432,6 @@ export class Pipeline {
     if (trig.grounding?.phase === 'preview' && (this.pending?.grounding?.phase === 'final' || this.inflight?.rec.kind === '말' || finalPlaying)) return
     // 말하는 중 미리 부르기는 한 번에 하나만. 진행 중이면 끝난 뒤 최신 내용으로 다시 부른다
     if (trig.kind === '말 중' && this.inflight && !this.pending) {
-      this.interimDirty = true
       return
     }
     if (this.pending?.grounding?.phase === 'final' && trig.grounding?.phase !== 'final') return
@@ -475,13 +539,6 @@ export class Pipeline {
     }
     if (this.inflight === inf) {
       this.inflight = null
-      if (this.interimDirty) {
-        this.interimDirty = false
-        if (this.interim && this.settings.early) {
-          const t = performance.now()
-          this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t, grounding: this.speechGrounding(this.interim, t, 'preview') })
-        }
-      }
     }
     this.log('request', { rec: { ...rec }, prompt, raw: consumer.raw(), imageB64 })
     this.notify()
@@ -663,9 +720,9 @@ export class Pipeline {
     this.lastSwap = null
     clearTimeout(this.timer)
     this.pending = null
-    this.interimDirty = false
     this.interim = ''
-    this.lastEarlyLen = 0
+    clearTimeout(this.commitTimer)
+    this.committedRaw = ''
     this.firedRules.clear()
     this.abortInflight('중단(초기화)')
     this.engine.reset()

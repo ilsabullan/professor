@@ -26,9 +26,19 @@ const t0 = lines[0].t
 // 실제 interim 수정, 필기/말 중첩과 시간 간격을 보존한다. speech 배열은 이전 평가와의 호환용.
 // 실제로 칠판에 반영된 장면 해석(묶기·나누기·판독)도 넣는다. 없으면 다시 만든 칠판의 객체 번호가 실측과 달라진다.
 const applied = (l) => l.type === 'scene' && typeof l.raw === 'string' && !l.discarded && !l.error
+// 장면 해석은 요청 당시의 객체 번호로 답한다. Board 휴리스틱이 바뀌면 다시 만든 칠판의 번호가 밀리므로
+// 번호별 획을 같이 넣어 재생할 때 획으로 맞춘다. ids: 요청 당시, after: 반영 직후
+const strokeIds = (s) => s.match(/(?<!\w)s\d+(?=\[|\s|$)/g) ?? []
+const sceneIds = (l) => {
+  const req = all.filter((r) => r.type === 'scene-request' && r.id === l.id && r.n < l.n).at(-1)
+  const ids = Object.fromEntries([...(req?.prompt ?? '').matchAll(/^(o\d+) .*?획 (.*)$/gm)]
+    .map(([, id, rest]) => [id, strokeIds(rest)]).filter(([, s]) => s.length))
+  const after = Object.fromEntries((l.objs ?? []).filter((o) => o.strokes?.length).map((o) => [o.id, o.strokes]))
+  return { ids, after }
+}
 const inputs = lines.filter((l) => ['ink', 'interim', 'final'].includes(l.type) || applied(l)).map((l) => ({
   n: l.n, at: l.t - t0, type: l.type,
-  ...(l.type === 'scene' ? { raw: l.raw } : l.event ? { event: l.event } : { text: l.text }),
+  ...(l.type === 'scene' ? { raw: l.raw, ...sceneIds(l) } : l.event ? { event: l.event } : { text: l.text }),
 }))
 const failures = lines.filter((l) => l.type === 'feedback' || l.type === 'issue').map((l) => {
   const req = lines.find((r) => r.type === 'request' && r.rec?.id === l.reqId)

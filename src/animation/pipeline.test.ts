@@ -37,23 +37,50 @@ const swap = (a = 'o1', b = 'o2') => JSON.stringify({ conf: .9, ops: [{ v: 'move
 const say = async (p: Pipeline, text: string) => { p.say(text); await vi.advanceTimersByTimeAsync(1); return requests.at(-1)! }
 
 describe('실측의 입력 중첩과 잘못된 대상', () => {
-  it('중간 발화와 확정 발화가 같은 교환을 보내도 정확히 한 번 이동한다', async () => {
+  it('동작 말로 끝난 받아쓰기는 바로 한 번 확정되고, 뒤늦은 브라우저 확정은 중복으로 무시된다', async () => {
     const { p } = setup()
+    const before = p.reqs.length
     p.onInterim('5와 3을 바꿔요', 0)
-    await vi.advanceTimersByTimeAsync(1)
-    requests[0].text(swap() + '\n')
-    expect(p.engine.settled('o1')?.x).toBe(208)
-    const preview = requests[0]
-    await say(p, '5와 3을 바꿔요')
-    expect(preview.signal.aborted).toBe(true)
-    expect(p.reqs.at(-1)?.model).toBe('local-numeric-swap')
-    // 취소된 중간 응답의 늦은 콜백도 두 번째 교환을 만들지 않는다.
-    preview.text(swap() + '\n')
-    preview.finish()
-    await vi.advanceTimersByTimeAsync(1)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(p.engine.settled('o1')?.x).toBe(358)
+    const made = p.reqs.length - before
+    expect(made).toBeGreaterThan(0)
+    p.onFinal('5와 3을 바꿔요.', 10)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(p.reqs.length - before).toBe(made)
     expect(p.engine.settled('o1')?.x).toBe(358)
     expect(p.engine.overlaps()).toEqual([])
-    expect(p.reqs.at(-1)?.tFirstMove).toBeDefined()
+  })
+
+  it('받아쓰기가 0.9초 멈추면 확정해 AI를 한 번만 부른다 (중간 글자마다 부르지 않음)', async () => {
+    const { p } = setup()
+    for (const t of ['이 배열은', '이 배열은 아직', '이 배열은 아직 정렬이', '이 배열은 아직 정렬이 안 됐어요']) {
+      p.onInterim(t, 0)
+      await vi.advanceTimersByTimeAsync(200)
+    }
+    expect(requests).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(requests).toHaveLength(1)
+    // 브라우저가 같은 덩어리를 이어서 보내면 확정한 앞부분은 빼고 뒷말만 다음 문장으로
+    p.onInterim('이 배열은 아직 정렬이 안 됐어요 그럼 비교해 볼게요', 0)
+    expect(p.interim).toBe('그럼 비교해 볼게요')
+  })
+
+  it('받아쓰기가 확정한 앞부분을 고쳐 써도 같은 문장을 다시 확정하지 않는다 (실측: "을"→"의")', async () => {
+    const { p } = setup()
+    p.onInterim('5와 3을 자리가 바뀌겠죠', 0)
+    await vi.advanceTimersByTimeAsync(1000)
+    const n = requests.length
+    p.onInterim('5와 3의 자리가 바뀌겠죠 다음은 8이에요', 0)
+    expect(p.interim).toBe('다음은 8이에요')
+    expect(requests.length).toBe(n)
+  })
+
+  it('"바꿔 볼까요"는 "바꿔"에서 끊지 않는다', async () => {
+    const { p } = setup()
+    p.onInterim('8과 1의 자리를 바꿔', 0)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(requests).toHaveLength(0)
   })
 
   it('비교만 말했는데 8·1 교환이 나오면 움직이지 않는다', async () => {
