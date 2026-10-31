@@ -17,7 +17,7 @@ export function logEntry(type: string, data: Record<string, unknown>) {
 /** 소수는 한 자리로 줄여 파일 크기를 줄인다 */
 const round = (_k: string, v: unknown) => (typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 10) / 10 : v)
 
-function flush(beacon = false) {
+export function flush(beacon = false) {
   if (!queue.length) return
   const body = JSON.stringify({ session: logSession, entries: queue }, round)
   queue = []

@@ -22,7 +22,14 @@ let client: Anthropic | null = null
  * 브라우저는 같은 출처의 /api/anthropic 으로만 보내고,
  * Vite 개발 서버 프록시가 .env의 키를 붙여 Anthropic으로 넘긴다. 진짜 키는 브라우저에 오지 않는다.
  */
+const nodeEnv = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env
+
 function getClient() {
+  // 브라우저 밖(채점 스크립트)에서는 .env 키로 직접 호출
+  if (typeof window === 'undefined') {
+    client ??= new Anthropic({ apiKey: nodeEnv?.ANTHROPIC_API_KEY, maxRetries: 2 })
+    return client
+  }
   client ??= new Anthropic({
     apiKey: 'set-by-dev-proxy',
     baseURL: `${window.location.origin}/api/anthropic`,

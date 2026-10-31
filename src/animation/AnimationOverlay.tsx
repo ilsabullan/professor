@@ -42,7 +42,33 @@ export function AnimationOverlay({ pipeline }: { pipeline: Pipeline }) {
   return (
     <div className="overlay">
       <canvas ref={ref} />
-      {pipeline.caption && <div className="caption">{pipeline.caption}</div>}
+      {pipeline.caption && (
+        <div className="caption">
+          {pipeline.caption}
+          {pipeline.lastPlayed && (
+            <span className="fb">
+              {pipeline.lastPlayed.feedback ? (
+                <span className="fb-done">{pipeline.lastPlayed.feedback === 'ok' ? '✓' : '✗'} 기록됨</span>
+              ) : (
+                <>
+                  <button onClick={() => pipeline.feedback(true)} title="의도대로 됨">
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => {
+                      const note = window.prompt('무엇이 달랐나요? (비워도 됨)') ?? ''
+                      pipeline.feedback(false, note)
+                    }}
+                    title="의도와 다름"
+                  >
+                    ✗
+                  </button>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

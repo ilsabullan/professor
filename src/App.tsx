@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { AnimationOverlay } from './animation/AnimationOverlay'
 import type { Pipeline } from './animation/pipeline'
 import { DevPanel } from './dev/DevPanel'
-import { logSession } from './dev/testlog'
+import { flush, logSession } from './dev/testlog'
 import { LESSONS, type Lesson, PAGE_H, PAGE_W } from './dev/lessons'
 import type { TestBoardController } from './testboard/controller'
 import { TestBoard } from './testboard/TestBoard'
@@ -19,6 +19,13 @@ export function App({ pipeline, board }: { pipeline: Pipeline; board: TestBoardC
   useSyncExternalStore(pipeline.subscribe, pipeline.getVersion)
   const [lesson, setLesson] = useState<Lesson>(LESSONS[0])
   const [issues, setIssues] = useState(0)
+
+  const submit = () => {
+    const note = window.prompt('이번 실측 보내기. 한 줄 메모 (비워도 됨)')
+    if (note === null) return
+    pipeline.submit(note)
+    flush()
+  }
 
   const markIssue = () => {
     const note = window.prompt('무엇이 의도와 달랐나요? (예: 5와 3이 안 바뀜, 배열인데 흐름이 나옴)')
@@ -40,6 +47,9 @@ export function App({ pipeline, board }: { pipeline: Pipeline; board: TestBoardC
         <h1>살아있는 칠판</h1>
         <span className="sub">교수자 · 애니메이션 레이어 테스트 · 기록 {logSession}</span>
         <div className="chips">
+          <button className="btn sm" onClick={submit}>
+            📤 보내기{pipeline.submitted ? ` (${pipeline.submitted})` : ''}
+          </button>
           <button className="btn sm issue" onClick={markIssue}>
             🚩 문제 표시{issues ? ` (${issues})` : ''}
           </button>

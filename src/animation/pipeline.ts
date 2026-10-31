@@ -104,7 +104,12 @@ export class Pipeline {
   private version = 0
   private notifyQueued = false
 
-  constructor(bus: InkBus) {
+  /** 마지막으로 화면에 재생된 AI 요청 (✓/✗ 피드백 대상) */
+  lastPlayed: ReqRecord | null = null
+  submitted = 0
+
+  /** headless: 브라우저 없이(채점 등) 돌릴 때. 프록시 확인·캐시 데우기·이미지 없이 바로 준비 상태 */
+  constructor(bus: InkBus, opts: { headless?: boolean } = {}) {
     this.engine = new Engine(this.board, (strokeIds, hidden) => bus.request({ type: 'hideStrokes', strokeIds, hidden }))
     this.player = new Player(this.engine, {
       onFirstOp: (step, now) => {
@@ -113,6 +118,7 @@ export class Pipeline {
         this.notifySoon()
       },
       onCaption: (step) => {
+        this.lastPlayed = this.reqs.find((r) => r.id === step.reqId) ?? this.lastPlayed
         this.caption = step.cap
         this.shown.push(step.cap)
         if (this.shown.length > 20) this.shown.shift()
@@ -129,6 +135,11 @@ export class Pipeline {
       },
     })
     bus.onInk((e) => this.handleInk(e))
+    if (opts.headless) {
+      this.aiStatus = 'ready'
+      this.settings.image = 'off'
+      return
+    }
     void this.checkProxy()
     // 5분 캐시가 식기 전에 다시 데움 (한동안 요청이 없을 때만)
     setInterval(() => {
@@ -347,7 +358,8 @@ export class Pipeline {
     this.lastCallAt = performance.now()
 
     const content: Anthropic.ContentBlockParam[] = []
-    rec.image = this.settings.image === 'on' || (this.settings.image === 'auto' && this.board.objs.some((o) => o.kind === 'mark'))
+    // 자동: 아직 값을 안 읽은 손글씨가 있을 때만 이미지 (다 읽었으면 글자로 충분하고 더 빠르다)
+    rec.image = this.settings.image === 'on' || (this.settings.image === 'auto' && this.board.objs.some((o) => o.kind === 'mark' && !o.read))
     const imageB64 = rec.image ? snapshotB64(this.board, this.engine) : undefined
     if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } })
     const prompt = buildUserPrompt({
@@ -399,8 +411,30 @@ export class Pipeline {
     for (const [id, v] of Object.entries(read)) {
       const o = this.board.get(id)
       // 값은 손글씨에만 기억한다 (선에 값을 붙이면 밑줄을 숫자로 착각함)
-      if (o && o.kind === 'mark' && !o.read) o.read = v
+      // '?'·빈 값은 못 읽은 것이므로 기억하지 않는다
+      if (o && o.kind === 'mark' && !o.read && v.trim() && !/^[?？]+$/.test(v.trim())) o.read = v.trim()
     }
+  }
+
+  /** 진행 중인 AI 요청·대기·재생이 있는지 (채점에서 반응이 끝날 때까지 기다릴 때) */
+  busy() {
+    return !!this.inflight || !!this.pending || !!this.player.current || this.player.queue.length > 0
+  }
+
+  /** 마지막 AI 반응에 대한 ✓/✗ */
+  feedback(ok: boolean, note = '') {
+    const r = this.lastPlayed
+    if (!r) return
+    r.feedback = ok ? 'ok' : 'bad'
+    this.log('feedback', { reqId: r.id, ok, note, cap: r.cap, kind: r.kind, desc: r.desc, utter: this.utter.slice(-3).map((u) => u.text) })
+    this.notify()
+  }
+
+  /** 실측 하나를 끝내고 검토 대상으로 보냄 */
+  submit(note = '') {
+    this.submitted++
+    this.log('submit', { note, ...this.stateForLog() })
+    this.notify()
   }
 
   /** 기록용 현재 상태 요약 */
@@ -414,6 +448,7 @@ export class Pipeline {
         strokes: o.strokes.map((s) => s.id),
         ...(o.text ? { text: o.text } : {}),
         ...(o.arrowEnd ? { arrowEnd: o.arrowEnd } : {}),
+        ...(o.read ? { read: o.read } : {}),
       })),
       overlaps: this.engine.overlaps(),
       flows: this.engine.flows.map((f) => f.along),

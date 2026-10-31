@@ -160,6 +160,31 @@ main {
   text-shadow: 0 2px 10px #000b;
 }
 
+.caption .fb {
+  margin-left: 14px;
+  display: inline-flex;
+  gap: 8px;
+  vertical-align: middle;
+  pointer-events: auto;
+  font-family: 'IBM Plex Sans KR', system-ui, sans-serif;
+}
+
+.caption .fb button {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #1d2925cc;
+  color: var(--ink);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.caption .fb-done {
+  font-size: 14px;
+  color: var(--dim);
+}
+
 .tools {
   position: absolute;
   left: 8px;

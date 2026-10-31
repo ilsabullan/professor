@@ -16,6 +16,8 @@ export interface ReqRecord {
   cap: string
   conf?: number
   cfg: string
+  /** 사용자 ✓/✗ */
+  feedback?: 'ok' | 'bad'
   /** 필기 이미지를 같이 보냈는지 */
   image?: boolean
   cacheRead?: number
