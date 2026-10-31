@@ -115,12 +115,18 @@ export class TestBoardController {
     }
   }
 
+  /** 마지막으로 받은 포인터 이벤트 시각. iPad Safari는 이미 보낸 coalesced 점을 다시 돌려준다 */
+  private lastStamp = 0
+
   private points(e: PointerEvent) {
     const list = e.getCoalescedEvents?.() ?? []
-    return (list.length ? list : [e]).map((v) => this.toPage(v))
+    const fresh = (list.length ? list : [e]).filter((v) => !v.timeStamp || v.timeStamp > this.lastStamp)
+    for (const v of fresh) this.lastStamp = Math.max(this.lastStamp, v.timeStamp || 0)
+    return fresh.map((v) => this.toPage(v))
   }
 
   private down = (e: PointerEvent) => {
+    this.lastStamp = e.timeStamp || 0
     const q = this.toPage(e)
     if (this.tool === 'text') {
       const r = this.canvas!.getBoundingClientRect()

@@ -19,7 +19,7 @@ const cases: Case[] = readdirSync(dir).filter((f) => f.endsWith('.json'))
 /** 현재 휴리스틱의 점수. 개선하면 올리고, 내려가면 회귀다. */
 const BASELINE = {
   calib: { digitsOk: 42, nonValueOk: 123, rowOk: 8 },
-  holdout: { digitsOk: 8, nonValueOk: 5, rowOk: 0 },
+  holdout: { digitsOk: 8, nonValueOk: 14, rowOk: 0 },
 }
 
 describe('획 라벨 대비 Board 휴리스틱', () => {
