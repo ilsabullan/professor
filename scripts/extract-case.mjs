@@ -8,12 +8,30 @@
 // 필기 해석 기대(expect: marks, boxes, underlines, arrows)는 npm test 가, checks 는 npm run eval 이 확인한다.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
-const [log, name, note = ''] = process.argv.slice(2)
+const [log, name, note = '', firstN = '0', lastN = 'Infinity'] = process.argv.slice(2)
 if (!log || !name) {
   console.error('사용: node scripts/extract-case.mjs logs/<세션>.jsonl <사례 이름> "<설명>"')
   process.exit(1)
 }
-const lines = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error('사례 이름은 영문 소문자/숫자/하이픈만 허용')
+// 예전 로그의 동시 flush는 도착 순서가 뒤집힐 수 있다. 원래 이벤트 번호로 복원한다.
+const all = [...new Map(readFileSync(log, 'utf8').trim().split('\n').map((l) => {
+  const e = JSON.parse(l)
+  return [e.n, e]
+})).values()].sort((a, b) => a.n - b.n)
+const lines = all.filter((l) => l.n >= Number(firstN) && l.n <= Number(lastN))
+if (!lines.length || !lines.some((l) => l.type === 'ink' && l.event.type === 'page')) throw new Error('범위에 페이지 시작 이벤트가 필요합니다')
+const t0 = lines[0].t
+// 실제 interim 수정, 필기/말 중첩과 시간 간격을 보존한다. speech 배열은 이전 평가와의 호환용.
+const inputs = lines.filter((l) => ['ink', 'interim', 'final'].includes(l.type)).map((l) => ({
+  n: l.n, at: l.t - t0, type: l.type,
+  ...(l.event ? { event: l.event } : { text: l.text }),
+}))
+const failures = lines.filter((l) => l.type === 'feedback' || l.type === 'issue').map((l) => {
+  const req = lines.find((r) => r.type === 'request' && r.rec?.id === l.reqId)
+  return { n: l.n, at: l.t - t0, note: l.note, ok: l.ok, reqId: l.reqId,
+    ...(req ? { request: { kind: req.rec.kind, desc: req.rec.desc, raw: req.raw } } : {}) }
+})
 const events = lines.filter((l) => l.type === 'ink').map((l) => l.event)
 const speech = lines.filter((l) => l.type === 'final' && l.text).map((l) => l.text)
 
@@ -43,7 +61,10 @@ for (const l of lines) {
 
 const file = `cases/${name}.json`
 const prev = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
-const out = { name, note: note || prev.note || '', source: log, expect: prev.expect ?? {}, read, checks: prev.checks ?? [], speech, events }
+// AI가 읽은 값은 정답이 아니다. 새 사례의 read는 검토 후 수동으로 붙인다.
+const out = { name, note: note || prev.note || '', source: log, sourceRange: [lines[0].n, lines.at(-1).n],
+  expect: prev.expect ?? {}, read: prev.read ?? {}, observedRead: read, checks: prev.checks ?? [],
+  speech, events, inputs, failures }
 writeFileSync(file, JSON.stringify(out) + '\n')
 console.log(`${file}: 필기 이벤트 ${events.length}개, 말 ${speech.length}개, 읽은 값 ${JSON.stringify(read)}\n`)
 console.log(timeline.join('\n'))

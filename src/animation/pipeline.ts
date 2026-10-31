@@ -8,7 +8,8 @@ import { Board } from './board'
 import { Engine, Player, type PlayStep } from './engine'
 import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
-import { CONNECTIVES, quickFromBoard, quickFromSpeech } from './quick'
+import { quickFromBoard, quickFromSpeech } from './quick'
+import { describeGrounding, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput } from './speech'
 
@@ -32,12 +33,12 @@ interface Trigger {
   desc: string
   t: number
   quickMs?: number
+  grounding?: Grounding
 }
 
 interface Inflight {
   rec: ReqRecord
   ctrl: AbortController
-  interimText: string
 }
 
 /** 계기별로 AI를 부르기 전 기다리는 시간(ms). 짧을수록 빠르고, 연달아 오는 입력은 하나로 묶는다 */
@@ -55,18 +56,6 @@ const DELAY: Record<string, number> = {
 }
 
 /** 여러 입력을 묶을 때 계기 이름은 더 강한 신호로 */
-const PRECEDENCE = ['획', '글자', '말 중', '말', '지우기', '가리키기', '덧그리기', '화살표', '다시 쓰기', '접속어']
-
-const norm = (s: string) => s.replace(/[\s.,!?~…]/g, '')
-
-/** 미리 보낸(말하는 중) 내용과 확정된 말이 사실상 같은지 */
-function sameSpeech(interim: string, final: string) {
-  const a = norm(interim)
-  const b = norm(final)
-  if (!a) return false
-  return b.startsWith(a) ? b.length - a.length <= 4 : a === b
-}
-
 export const shortModel = (m: ModelId) => (m === 'claude-haiku-5-5' ? 'Haiku 5.5' : 'Sonnet 5.5')
 
 export class Pipeline {
@@ -88,15 +77,25 @@ export class Pipeline {
   shown: string[] = []
   quickLog: string[] = []
   /** 테스트 기록 훅 (개발용). 기본은 아무것도 안 함 */
-  log: (type: string, data: Record<string, unknown>) => void = () => {}
+  private logger: (type: string, data: Record<string, unknown>) => void = () => {}
+  get log() { return this.logger }
+  set log(logger: (type: string, data: Record<string, unknown>) => void) {
+    this.logger = logger
+    this.log('settings', { settings: { ...this.settings }, initial: true })
+  }
+
+  private logRequestUpdate(rec: ReqRecord, reason: string) {
+    this.log('request-update', { rec: { ...rec }, reason })
+  }
 
   private inflight: Inflight | null = null
-  private lastSpec: { text: string; rec: ReqRecord; doneAt: number } | null = null
   private pending: Trigger | null = null
   private timer: ReturnType<typeof setTimeout> | undefined
   private seq = 0
   private firedRules = new Set<string>()
-  private connCount = 0
+  private actionSeq = 0
+  private epoch = 0
+  private focus: { ids: string[]; t: number } = { ids: [], t: 0 }
   private lastEarlyLen = 0
   private interimDirty = false
   private lastCallAt = 0
@@ -115,6 +114,9 @@ export class Pipeline {
       onFirstOp: (step, now) => {
         const r = this.reqs.find((x) => x.id === step.reqId)
         if (r && r.tFirstOp == null) r.tFirstOp = now
+        if (r && r.tFirstMove == null && step.ops.some((op) => op.v === 'move')) r.tFirstMove = now
+        if (r) this.logRequestUpdate(r, 'first-op')
+        this.log('applied', { reqId: step.reqId, actionId: step.commitKey, ops: step.ops })
         this.notifySoon()
       },
       onCaption: (step) => {
@@ -124,6 +126,14 @@ export class Pipeline {
         if (this.shown.length > 20) this.shown.shift()
         this.notifySoon()
       },
+      onRejected: (step, reason) => {
+        const r = this.reqs.find((x) => x.id === step.reqId)
+        if (r) { r.rejected = (r.rejected ?? 0) + 1; r.status = `보류: ${reason}` }
+        if (r) this.logRequestUpdate(r, 'rejected')
+        this.log('rejected', { reqId: step.reqId, reason, ops: step.ops, ...this.stateForLog() })
+        this.player.drop(step.reqId)
+        this.notifySoon()
+      },
     })
     this.speech = new SpeechInput({
       onInterim: (text, t) => this.onInterim(text, t),
@@ -131,8 +141,10 @@ export class Pipeline {
       onState: (state, note) => {
         this.mic = state
         this.micNote = note ?? ''
+        this.log('mic', { state, note })
         this.notify()
       },
+      onDiagnostic: (event, detail) => this.log('speech', { event, ...detail }),
     })
     bus.onInk((e) => this.handleInk(e))
     if (opts.headless) {
@@ -175,13 +187,13 @@ export class Pipeline {
 
   cfgKey() {
     const s = this.settings
-    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}`
+    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}`
   }
 
   update(patch: Partial<Settings>) {
     const rewarm = (patch.model && patch.model !== this.settings.model) || (patch.thinking && patch.thinking !== this.settings.thinking)
     this.settings = { ...this.settings, ...patch }
-    this.log('settings', { settings: this.settings })
+    this.log('settings', { settings: { ...this.settings } })
     if (rewarm) void this.warm()
     this.notify()
   }
@@ -221,27 +233,36 @@ export class Pipeline {
 
   // ---------- 입력 ----------
   private handleInk(e: InkEvent) {
+    const reset = e.type === 'page' || e.type === 'clear'
+    if (reset) {
+      this.resetAnimation()
+      this.utter = []
+      this.focus = { ids: [], t: 0 }
+    }
     const before = this.board.objs.map((o) => o.id)
     this.log('ink', { event: e })
     const ev = this.board.apply(e)
     this.log('board', { event: ev, ...this.stateForLog() })
-    if (e.type === 'page' || e.type === 'clear') {
-      this.resetAnimation()
-      return
-    }
+    if (reset) return
     if (e.type === 'erase') this.engine.forget(before.filter((id) => !this.board.get(id)))
     if (!ev) {
       this.notify()
       return
     }
     const quickMs = this.quick(quickFromBoard(ev, this.board), ev.t, ev.kind)
-    this.schedule({ kind: ev.kind, desc: ev.desc, t: ev.t, quickMs })
+    this.schedule({ kind: ev.kind, desc: ev.desc, t: ev.t, quickMs, grounding: {
+      id: `${this.epoch}:ink:${++this.actionSeq}`, phase: 'ink', text: ev.desc,
+      targets: ev.objId ? [ev.objId] : [], move: ev.kind === '가리키기',
+      flow: ev.kind === '화살표' || ev.kind === '덧그리기', stop: false, sort: false,
+    } })
   }
 
   /** 즉시 반응 실행. 실행했으면 행동부터 걸린 ms */
   private quick(ops: Op[], t0: number, label: string): number | undefined {
     if (!this.settings.quick || !ops.length) return undefined
     const now = performance.now()
+    const reason = this.engine.validateStep(ops)
+    if (reason) { this.log('rejected', { kind: 'quick', reason, ops }); return undefined }
     this.engine.beginStep()
     for (const op of ops) this.engine.applyOp(op, now)
     const ms = now - t0
@@ -255,14 +276,10 @@ export class Pipeline {
   onInterim(text: string, t: number) {
     this.interim = text.trim()
     this.log('interim', { text: this.interim })
-    const quickMs = this.quick(quickFromSpeech(this.interim, this.board, this.engine, this.firedRules), t, '말')
-    const conn = this.interim.match(CONNECTIVES) ?? []
-    if (conn.length > this.connCount) {
-      this.connCount = conn.length
-      this.schedule({ kind: '접속어', desc: `시간 접속어 "${conn[conn.length - 1]}" (다음 단계로 넘어감): "${this.interim}"`, t, quickMs })
-    } else if (this.settings.early && this.interim.length - this.lastEarlyLen >= 4) {
+    if (this.settings.early && this.interim.length - this.lastEarlyLen >= 4) {
       this.lastEarlyLen = this.interim.length
-      this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t, quickMs })
+      this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t,
+        grounding: this.speechGrounding(this.interim, t, 'preview') })
     }
     this.notifySoon()
   }
@@ -272,32 +289,32 @@ export class Pipeline {
     this.log('final', { text: final })
     this.interim = ''
     this.lastEarlyLen = 0
-    this.connCount = 0
     if (!final) {
       this.firedRules.clear()
       return
+    }
+    // 미완성 발화는 강조만 했다. 확정 발화는 한 개의 새로운 실행 단위다.
+    clearTimeout(this.timer)
+    this.pending = null
+    this.interimDirty = false
+    this.abortInflight('중단(확정 발화)')
+    this.player.cancelPending()
+    const grounding = this.speechGrounding(final, tEnd, 'final')
+    if (/(비교|비유|더\s*크|더\s*작)/.test(final) || grounding.targets.length === 2) {
+      const next = final.split(/그\s*다음(?:에)?/).at(-1)!
+      const nextGrounding = next !== final ? this.speechGrounding(next, tEnd, 'preview') : grounding
+      this.focus = { ids: nextGrounding.targets, t: tEnd }
     }
     const quickMs = this.quick(quickFromSpeech(final, this.board, this.engine, this.firedRules), tEnd, '말')
     this.firedRules.clear()
     this.utter.push({ text: final, t: tEnd })
     if (this.utter.length > 30) this.utter.shift()
-    // 말하는 중에 미리 보낸 요청이 같은 내용이면 그 결과를 그대로 쓴다
-    const inf = this.inflight
-    if (inf && inf.rec.kind === '말 중' && sameSpeech(inf.interimText, final)) {
-      inf.rec.kind = '말(미리)'
-      inf.rec.tSpeechEnd = tEnd
-      this.notify()
-      return
-    }
-    const spec = this.lastSpec
-    if (spec && performance.now() - spec.doneAt < 3000 && sameSpeech(spec.text, final)) {
-      spec.rec.kind = '말(미리)'
-      spec.rec.tSpeechEnd = tEnd
-      this.lastSpec = null
-      this.notify()
-      return
-    }
-    this.schedule({ kind: '말', desc: `발화: "${final}"`, t: tEnd, quickMs })
+    this.schedule({ kind: '말', desc: `발화: "${final}"`, t: tEnd, quickMs, grounding })
+  }
+
+  private speechGrounding(text: string, t: number, phase: 'preview' | 'final') {
+    return groundSpeech(this.board, text, t - this.focus.t < 30000 ? this.focus.ids : [],
+      `${this.epoch}:speech:${phase === 'final' ? ++this.actionSeq : this.actionSeq + 1}`, phase, this.engine)
   }
 
   /** 받아쓰기 칸 등에서 문장을 직접 넣을 때 */
@@ -307,18 +324,15 @@ export class Pipeline {
   }
 
   private schedule(trig: Trigger) {
+    const finalPlaying = [this.player.current, ...this.player.queue].some((s) => s && this.reqs.find((r) => r.id === s.reqId)?.kind === '말')
+    if (trig.grounding?.phase === 'preview' && (this.pending?.grounding?.phase === 'final' || this.inflight?.rec.kind === '말' || finalPlaying)) return
     // 말하는 중 미리 부르기는 한 번에 하나만. 진행 중이면 끝난 뒤 최신 내용으로 다시 부른다
     if (trig.kind === '말 중' && this.inflight && !this.pending) {
       this.interimDirty = true
       return
     }
-    const p = this.pending
-    if (p) {
-      p.desc = `${p.desc} / ${trig.desc}`
-      if (PRECEDENCE.indexOf(trig.kind) > PRECEDENCE.indexOf(p.kind)) p.kind = trig.kind
-      p.t = Math.max(p.t, trig.t)
-      p.quickMs ??= trig.quickMs
-    } else this.pending = { ...trig }
+    if (this.pending?.grounding?.phase === 'final' && trig.grounding?.phase !== 'final') return
+    this.pending = { ...trig }
     clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       const next = this.pending
@@ -332,6 +346,8 @@ export class Pipeline {
     if (!inf) return
     this.inflight = null
     inf.rec.status = status
+    inf.rec.tEnd = performance.now()
+    this.logRequestUpdate(inf.rec, 'abort')
     inf.ctrl.abort()
     this.player.drop(inf.rec.id)
   }
@@ -340,7 +356,9 @@ export class Pipeline {
     if (this.aiStatus !== 'ready') return
     if (!this.board.objs.length && !this.utter.length && !this.interim) return
     this.abortInflight('중단(새 입력)')
+    const settings = { ...this.settings }
     const rec: ReqRecord = {
+      settings,
       id: ++this.seq,
       kind: trig.kind,
       desc: trig.desc,
@@ -349,20 +367,36 @@ export class Pipeline {
       status: '진행 중',
       cap: '',
       cfg: this.cfgKey(),
+      actionId: trig.grounding?.id,
     }
     this.reqs.push(rec)
     if (this.reqs.length > 300) this.reqs.shift()
     const ctrl = new AbortController()
-    const inf: Inflight = { rec, ctrl, interimText: this.interim }
+    const inf: Inflight = { rec, ctrl }
     this.inflight = inf
     this.lastCallAt = performance.now()
 
-    const content: Anthropic.ContentBlockParam[] = []
-    // 자동: 아직 값을 안 읽은 손글씨가 있을 때만 이미지 (다 읽었으면 글자로 충분하고 더 빠르다)
-    rec.image = this.settings.image === 'on' || (this.settings.image === 'auto' && this.board.objs.some((o) => o.kind === 'mark' && !o.read))
-    const imageB64 = rec.image ? snapshotB64(this.board, this.engine) : undefined
-    if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } })
-    const prompt = buildUserPrompt({
+    // 시작부터 기록해 준비 중 실패하거나 페이지를 닫아도 시도한 요청이 남는다.
+    this.log('request-start', { rec: { ...rec } })
+    let prompt = ''
+    let imageB64: string | undefined
+    const consumer = this.consume(rec, trig.grounding, ctrl.signal, settings.thr)
+    try {
+      const g = trig.grounding
+      const plan = g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null
+      if (plan) {
+        rec.model = g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'
+        rec.cfg += '/로컬이동'
+        consumer.onText(JSON.stringify({ conf: 1, ...plan }) + '\n')
+        rec.tDone = rec.tEnd = performance.now()
+        rec.status = consumer.finish()
+      } else {
+      const content: Anthropic.ContentBlockParam[] = []
+      // 자동: 아직 값을 안 읽은 손글씨가 있을 때만 이미지 (다 읽었으면 글자로 충분하고 더 빠르다)
+      rec.image = settings.image === 'on' || (settings.image === 'auto' && this.board.values().some((o) => o.kind === 'mark' && !o.read))
+      imageB64 = rec.image ? snapshotB64(this.board, this.engine) : undefined
+      if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } })
+      prompt = buildUserPrompt({
         board: this.board,
         engine: this.engine,
         utter: this.utter,
@@ -370,24 +404,30 @@ export class Pipeline {
         shown: this.shown,
         trigger: trig.desc,
         now: performance.now(),
-    })
-    content.push({ type: 'text', text: prompt })
-    rec.tSend = performance.now()
-    this.notify()
+      }) + (trig.grounding ? '\n' + describeGrounding(trig.grounding) : '')
+      content.push({ type: 'text', text: prompt })
+      rec.tSend = performance.now()
+      this.log('request-update', { rec: { ...rec }, reason: 'send', prompt, imageB64 })
+      this.notify()
 
-    const consumer = this.consume(rec)
-    try {
-      const res = await streamSteps(this.aiOptions, content, ctrl.signal, consumer.onText)
-      rec.tDone = performance.now()
-      rec.cacheRead = res.cacheRead
-      rec.inputTokens = res.inputTokens
-      rec.outputTokens = res.outputTokens
-      rec.status = consumer.finish()
+      const res = await streamSteps({ model: settings.model, thinking: settings.thinking }, content, ctrl.signal, consumer.onText)
+      // 취소 직전에 끝난 응답이 뒤늦게 도착해도 중단 기록을 덮어쓰지 않는다.
+      if (!ctrl.signal.aborted) {
+        rec.tDone = performance.now()
+        rec.tEnd = rec.tDone
+        rec.model = res.model
+        rec.cacheRead = res.cacheRead
+        rec.inputTokens = res.inputTokens
+        rec.outputTokens = res.outputTokens
+        rec.status = consumer.finish()
+      }
+      }
     } catch (err) {
-      consumer.finish()
+      consumer.finish(false)
       const d = describeError(err)
-      if (!d.aborted && !ctrl.signal.aborted) {
-        rec.status = `오류: ${d.text}`
+      if (!ctrl.signal.aborted) {
+        rec.tEnd = performance.now()
+        rec.status = d.aborted ? '중단' : `오류: ${d.text}`
         if (d.noKey) {
           this.aiStatus = 'nokey'
           this.aiNote = d.text
@@ -396,10 +436,12 @@ export class Pipeline {
     }
     if (this.inflight === inf) {
       this.inflight = null
-      if (rec.kind === '말 중') this.lastSpec = { text: inf.interimText, rec, doneAt: performance.now() }
       if (this.interimDirty) {
         this.interimDirty = false
-        if (this.interim && this.settings.early) this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t: performance.now() })
+        if (this.interim && this.settings.early) {
+          const t = performance.now()
+          this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t, grounding: this.speechGrounding(this.interim, t, 'preview') })
+        }
       }
     }
     this.log('request', { rec: { ...rec }, prompt, raw: consumer.raw(), imageB64 })
@@ -412,7 +454,7 @@ export class Pipeline {
       const o = this.board.get(id)
       // 값은 손글씨에만 기억한다 (선에 값을 붙이면 밑줄을 숫자로 착각함)
       // '?'·빈 값은 못 읽은 것이므로 기억하지 않는다
-      if (o && o.kind === 'mark' && !o.read && v.trim() && !/^[?？]+$/.test(v.trim())) o.read = v.trim()
+      if (o && o.kind === 'mark' && !this.board.underlineOf(id) && !o.read && v.trim() && !/^[?？]+$/.test(v.trim())) o.read = v.trim()
     }
   }
 
@@ -426,7 +468,8 @@ export class Pipeline {
     const r = this.lastPlayed
     if (!r) return
     r.feedback = ok ? 'ok' : 'bad'
-    this.log('feedback', { reqId: r.id, ok, note, cap: r.cap, kind: r.kind, desc: r.desc, utter: this.utter.slice(-3).map((u) => u.text) })
+    this.logRequestUpdate(r, 'feedback')
+    this.log('feedback', { reqId: r.id, ok, note, cap: r.cap, kind: r.kind, desc: r.desc, utter: this.utter.slice(-3).map((u) => u.text), ...this.stateForLog() })
     this.notify()
   }
 
@@ -445,6 +488,8 @@ export class Pipeline {
         id: o.id,
         kind: o.kind,
         bbox: [r(o.bbox.x), r(o.bbox.y), r(o.bbox.w), r(o.bbox.h)],
+        position: this.engine.settled(o.id),
+        annotationOf: this.board.underlineOf(o.id),
         strokes: o.strokes.map((s) => s.id),
         ...(o.text ? { text: o.text } : {}),
         ...(o.arrowEnd ? { arrowEnd: o.arrowEnd } : {}),
@@ -469,51 +514,71 @@ export class Pipeline {
   }
 
   /** 스트리밍으로 쌓이는 응답 글자를 단계·동작으로 바꿔 바로 재생에 넘긴다 */
-  private consume(rec: ReqRecord) {
-    const made: PlayStep[] = []
-    const rawSeen: number[] = []
+  private consume(rec: ReqRecord, grounding?: Grounding, signal?: AbortSignal, threshold = this.settings.thr) {
+    const seen = new Set<number>()
+    const epoch = this.epoch
+    let expectedLayout = this.engine.layoutKey()
+    const readVersions = new Map(this.board.objs.map((o) => [o.id, o.t]))
+    let made = 0
     let gated = false
     let none = false
     let last = ''
     const onText = (full: string) => {
+      if (signal?.aborted || epoch !== this.epoch) return
       last = full
-      if (rec.tFirst == null) rec.tFirst = performance.now()
+      if (rec.tFirst == null) {
+        rec.tFirst = performance.now()
+        this.logRequestUpdate(rec, 'first-token')
+      }
       this.aiRaw = full
       const parsed = parseProgress(full)
       none = parsed.none
-      this.applyRead(parsed.read)
+      this.applyRead(Object.fromEntries(Object.entries(parsed.read).filter(([id]) => this.board.get(id)?.t === readVersions.get(id))))
       parsed.steps.forEach((ps, i) => {
         if (i === 0 && ps.conf != null) {
           rec.conf = ps.conf
-          if (ps.conf < this.settings.thr) gated = true
+          if (ps.conf < threshold) gated = true
         }
-        if (gated) return
-        let st = made[i]
-        if (!st) {
-          st = { reqId: rec.id, ops: [], applied: 0, cap: '', capShown: false, open: true, startedAt: null, maxDur: 0 }
-          made[i] = st
-          rawSeen[i] = 0
-          this.player.push(st)
+        if (gated || rec.rejected || !ps.closed || seen.has(i)) return
+        seen.add(i)
+        const ops = ps.ops.map(sanitizeOp)
+        const reject = (reason: string) => {
+          rec.rejected = (rec.rejected ?? 0) + 1
+          this.logRequestUpdate(rec, 'rejected')
+          this.log('rejected', { reqId: rec.id, reason, ops, ...this.stateForLog() })
         }
-        for (const raw of ps.ops.slice(rawSeen[i])) {
-          const op = sanitizeOp(raw)
-          if (op) st.ops.push(op)
+        if (!ps.valid || ops.some((op) => !op)) { reject('완성된 유효한 동작 묶음이 아님'); return }
+        const validOps = ops as Op[]
+        if (!validOps.length) return
+        const reason = grounding ? rejectUngrounded(validOps, grounding, this.board) : null
+        if (reason) { reject(reason); return }
+        const mutations = validOps.filter((op) => op.v === 'move').map((op) => [op.id, op.to, op.along]).sort()
+        const st: PlayStep = {
+          reqId: rec.id, ops: validOps, applied: 0, cap: ps.cap, capShown: false, open: false, startedAt: null, maxDur: 0,
+          commitKey: `${grounding?.id ?? rec.id}:${mutations.length ? JSON.stringify(mutations) : i}`,
+          validate: () => signal?.aborted || epoch !== this.epoch ? '취소되거나 이전 페이지의 요청'
+            : this.engine.layoutKey() !== expectedLayout ? '요청 이후 칠판 배치가 바뀜'
+            : grounding ? rejectUngrounded(validOps, grounding, this.board) : null,
+          onApplied: () => { expectedLayout = this.engine.layoutKey(); this.log('state', { reqId: rec.id, ...this.stateForLog() }) },
         }
-        rawSeen[i] = ps.ops.length
-        if (ps.cap) st.cap = ps.cap
-        if (i === 0 && ps.cap) rec.cap = ps.cap
-        if (ps.closed) st.open = false
+        made++
+        if (!rec.cap) rec.cap = ps.cap
+        this.player.push(st)
       })
       // 다음 화면 갱신(최대 16ms)을 기다리지 않고 도착한 동작을 바로 실행
       this.player.tick(performance.now())
       this.notifySoon()
     }
-    const finish = () => {
-      // 마지막 줄은 줄바꿈 없이 끝나므로 닫힌 줄로 한 번 더 읽어 read 값을 챙긴다
-      if (last) this.applyRead(parseProgress(last + '\n').read)
-      made.forEach((st) => (st.open = false))
+    const finish = (success = true) => {
+      // 중단/오류에서 부분 JSON을 닫아 실행하지 않는다.
+      if (success && last) {
+        const raw = last
+        onText(raw + '\n')
+        last = raw
+      }
       if (gated) return `확신 낮음(${rec.conf?.toFixed(2)})`
-      if (made.some((s) => s.ops.length)) return '재생'
+      if (rec.rejected) return `보류(${rec.rejected})`
+      if (made) return '재생'
       return none ? '새 움직임 없음' : '형식 오류'
     }
     return { onText, finish, raw: () => last }
@@ -545,11 +610,19 @@ export class Pipeline {
   }
 
   resetAnimation() {
+    this.epoch++
+    clearTimeout(this.timer)
+    this.pending = null
+    this.interimDirty = false
+    this.interim = ''
+    this.lastEarlyLen = 0
+    this.firedRules.clear()
     this.abortInflight('중단(초기화)')
     this.engine.reset()
     this.player.clear()
     this.shown = []
     this.caption = ''
+    this.lastPlayed = null
     this.notify()
   }
 

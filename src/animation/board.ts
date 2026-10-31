@@ -177,15 +177,36 @@ export class Board {
   /** 손글씨·글자 바로 아래에 그은 짧은 가로선이면 그 대상 id (밑줄 = 강조, 흐름 아님) */
   underlineOf(id: string): string | undefined {
     const o = this.get(id)
-    if (!o || o.kind !== 'line' || o.arrowEnd) return undefined
+    if (!o || !['line', 'mark'].includes(o.kind) || o.arrowEnd) return undefined
     const b = o.bbox
-    if (b.w > 180 || b.h > b.w * 0.35) return undefined
+    // 짧거나 여러 번 덧그은 밑줄은 모양 분류에서 mark가 될 수 있다.
+    if (b.w < 18 || b.w > 180 || b.h > b.w * 0.45) return undefined
     return this.objs.find((m) => {
-      if (m.kind !== 'mark' && m.kind !== 'text') return false
+      if (m.id === id || (m.kind !== 'mark' && m.kind !== 'text') || m.t > o.t) return false
+      if (m.bbox.h < Math.max(24, b.h * 2)) return false
       const bottom = m.bbox.y + m.bbox.h
       const overlap = Math.min(b.x + b.w, m.bbox.x + m.bbox.w) - Math.max(b.x, m.bbox.x)
-      return b.y > bottom - 20 && b.y < bottom + 50 && overlap > 0.4 * Math.min(b.w, m.bbox.w)
+      return b.y > bottom - Math.min(35, m.bbox.h * 0.25) && b.y < bottom + 50 && overlap > 0.3 * Math.min(b.w, m.bbox.w)
     })?.id
+  }
+
+  /** 숫자/글자 후보. 밑줄의 OCR 결과가 배열 원소에 섞이지 않게 모든 소비자가 공유한다. */
+  values() {
+    return this.objs.filter((o) => (o.kind === 'mark' || o.kind === 'text') && !this.underlineOf(o.id))
+  }
+
+  /** 흐름 경로: 화살표, 가리킨 궤적, 또는 서로 다른 객체를 잇는 열린 선. */
+  isFlowPath(id: string) {
+    if (this.traces.some((t) => t.id === id)) return true
+    const o = this.get(id)
+    if (!o || o.kind !== 'line' || !o.pts || this.underlineOf(id)) return false
+    if (o.arrowEnd) return true
+    const ends = [o.pts[0], o.pts[o.pts.length - 1]]
+    const near = ends.map((p) => this.objs
+      .filter((x) => x.id !== id && (x.kind === 'box' || x.kind === 'text'))
+      .filter((x) => inBox(p, x.bbox, 35))
+      .sort((a, b) => area(a.bbox) - area(b.bbox))[0]?.id)
+    return !!near[0] && !!near[1] && near[0] !== near[1]
   }
 
   /** 이벤트를 반영하고, AI를 부를 만한 사건이면 돌려준다 */
@@ -297,6 +318,7 @@ export class Board {
         last.strokes.push(stroke)
         last.bbox = nb
         last.t = t
+        delete last.read // 획이 바뀌면 이전 이미지의 판독값은 더 이상 확정값이 아니다
         return { kind: '획', desc: `손글씨 ${last.id}에 획 추가`, t, objId: last.id }
       }
     }
@@ -362,6 +384,7 @@ export class Board {
         gone.push({ id: o.id, kind: o.kind, bbox: o.bbox, text: o.text, t })
       } else {
         o.bbox = bboxOf(o.strokes.flatMap((s) => s.pts))
+        delete o.read
         if (o.kind === 'line') o.pts = simplify(o.strokes[0].pts, 24)
       }
     }

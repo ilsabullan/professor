@@ -21,8 +21,7 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
     case '덧그리기': {
       // 밑줄을 다시 그은 건 강조일 뿐 흐름이 아니다. 화살표나 긴 선일 때만 흐름
       const o = board.get(id)
-      const long = !!o?.pts && Math.hypot(o.bbox.w, o.bbox.h) > 150
-      if (board.underlineOf(id) || !(o?.arrowEnd || long)) return []
+      if (!o || !board.isFlowPath(id)) return []
       return [{ v: 'flow', along: id, n: 10, speed: 1.6, color: '#cdf0ff', rev: !!ev.rev }]
     }
     case '다시 쓰기':
@@ -42,21 +41,22 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
   return []
 }
 
-/** 가장 최근에 그린 화살표 (흐름 키워드는 방향이 분명한 화살표에만) */
-function latestArrow(board: Board) {
-  return [...board.objs].reverse().find((o) => o.kind === 'line' && o.arrowEnd)
+/** 방향이 분명한 유일한 화살표. 여러 경로 중 대상을 추측하지 않는다. */
+function uniqueArrow(board: Board) {
+  const arrows = board.objs.filter((o) => o.kind === 'line' && o.arrowEnd)
+  return arrows.length === 1 ? arrows[0] : undefined
 }
 
 /** 말에서 확실한 키워드가 나오면 바로 반영. 이미 쓴 규칙(fired)은 같은 문장에서 다시 쓰지 않는다 */
 export function quickFromSpeech(text: string, board: Board, engine: Engine, fired: Set<string>): Op[] {
   const flowing = engine.flows.map((f) => f.along)
-  const arrow = latestArrow(board)
+  const arrow = uniqueArrow(board)
   const rules: { key: string; re: RegExp; make: () => Op[] }[] = [
     {
       key: 'congest',
       re: /(막히|막혀|막힌|몰리|몰려|쌓이|쌓여|병목|밀려|정체)/,
       make: () => {
-        const along = flowing[flowing.length - 1] ?? arrow?.id
+        const along = flowing.length === 1 ? flowing[0] : flowing.length === 0 ? arrow?.id : undefined
         return along ? [{ v: 'flow', along, n: 16, speed: 0.35, color: COLORS.red, rev: !!arrow?.arrowEnd && arrow.arrowEnd === 'start' }] : []
       },
     },

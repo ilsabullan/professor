@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Board } from './board'
-import { Engine } from './engine'
+import { Engine, Player, type PlayStep } from './engine'
 
 /** 손글씨 두 개(o1 왼쪽, o2 오른쪽)를 둔 보드 */
 function setup() {
@@ -39,6 +39,19 @@ describe('move', () => {
     expect(e.overlaps()).toEqual([['o1', 'o2']])
   })
 
+  it('이동 중 새 목표를 주면 이전 애니메이션이 화면 좌표를 덮어쓰지 않는다', () => {
+    const { e } = setup()
+    e.beginStep()
+    e.applyOp({ v: 'move', id: 'o1', to: [500, 300], dur: 2000 }, 0)
+    e.tick(100, .05)
+    e.beginStep()
+    e.applyOp({ v: 'move', id: 'o1', to: [100, 300], dur: 300 }, 100)
+    e.tick(500, .05)
+    expect(e.center('o1')).toEqual({ x: 100, y: 300 })
+    e.tick(3000, .05)
+    expect(e.center('o1')).toEqual({ x: 100, y: 300 })
+  })
+
   it('다음 단계는 이전 단계가 끝난 자리 기준 (15초 넘게 지나 다시 맞바꾸면 원위치)', () => {
     const { e } = setup()
     run(e, [
@@ -58,18 +71,52 @@ describe('move', () => {
   })
 })
 
-describe('되돌리기 방지', () => {
-  it('방금 맞바꾼 쌍을 곧바로 다시 맞바꾸지 않는다 (실측: 5↔3이 두 번 실행돼 원위치)', () => {
+describe('발화 단위 실행', () => {
+  const swapStep = (key: string, open = false): PlayStep => ({
+    reqId: 1, commitKey: key, ops: [
+      { v: 'move', id: 'o1', to: 'o2', dur: 500 },
+      { v: 'move', id: 'o2', to: 'o1', dur: 500 },
+    ], applied: 0, cap: '교환', capShown: false, open, startedAt: null, maxDur: 0,
+  })
+
+  it('같은 발화의 교환은 한 번만, 새 발화의 재교환은 15초 안에도 허용한다', () => {
     const { e } = setup()
-    const swap = (t: number) => {
-      e.beginStep()
-      e.applyOp({ v: 'move', id: 'o1', to: 'o2', dur: 500 }, t)
-      e.applyOp({ v: 'move', id: 'o2', to: 'o1', dur: 500 }, t)
-      e.tick(t + 10_000, 0.05)
-    }
-    swap(1000)
-    swap(5000)
+    const rejected: string[] = []
+    const p = new Player(e, { onFirstOp() {}, onCaption() {}, onRejected: (_s, r) => rejected.push(r) })
+    p.push(swapStep('speech:1'))
+    p.tick(1000)
+    p.tick(2000)
+    p.push(swapStep('speech:1'))
+    p.tick(3000)
     expect(e.settled('o1')).toEqual({ x: 400, y: 300 })
-    expect(e.settled('o2')).toEqual({ x: 200, y: 300 })
+    expect(rejected).toHaveLength(1)
+    p.push(swapStep('speech:2'))
+    p.tick(4000)
+    expect(e.settled('o1')).toEqual({ x: 200, y: 300 })
+  })
+
+  it('교환의 반쪽이 도착한 상태에서 취소되면 아무것도 움직이지 않는다', () => {
+    const { e } = setup()
+    const p = new Player(e, { onFirstOp() {}, onCaption() {} })
+    const step = swapStep('speech:1', true)
+    step.ops.pop()
+    p.push(step)
+    p.tick(1000)
+    p.drop(1)
+    p.tick(2000)
+    expect(e.settled('o1')).toEqual({ x: 200, y: 300 })
+    expect(e.settled('o2')).toEqual({ x: 400, y: 300 })
+  })
+
+  it('한쪽 이동만 있는 완성 응답도 겹침과 잘못된 자막을 함께 차단한다', () => {
+    const { e } = setup()
+    const captions: string[] = []
+    const p = new Player(e, { onFirstOp() {}, onCaption: (s) => captions.push(s.cap) })
+    const step = swapStep('speech:1')
+    step.ops.pop()
+    p.push(step)
+    p.tick(1000)
+    expect(e.settled('o1')).toEqual({ x: 200, y: 300 })
+    expect(captions).toEqual([])
   })
 })

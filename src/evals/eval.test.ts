@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { Pipeline } from '../animation/pipeline'
 import { InkBus } from '../shared/bus'
 import type { InkEvent } from '../shared/ink'
+import { replayInputs, rebaseInk, type RecordedInput } from './replay'
+import { passes, type Check, type Frame } from './scoring'
 
 /**
  * AI 동작 채점 (실제 API 호출, 돈 듦). `npm run eval` 로만 돈다.
@@ -14,6 +16,8 @@ import type { InkEvent } from '../shared/ink'
 
 const RUNS = Number(process.env.EVAL_RUNS ?? 3)
 const ONLY = process.env.EVAL_CASE
+const TIMED = process.env.EVAL_MODE === 'timed'
+const MIN_PASS = Number(process.env.EVAL_MIN_PASS ?? 0.9)
 
 // .env 의 ANTHROPIC_API_KEY 읽기
 try {
@@ -24,16 +28,6 @@ try {
 } catch {}
 globalThis.requestAnimationFrame ??= ((cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 16)) as unknown as typeof requestAnimationFrame
 
-interface Check {
-  after: number
-  /** 읽은 값을 왼쪽→오른쪽으로 놓은 순서. | 로 허용 답 여러 개 */
-  order?: string
-  /** 이 선들이 흐르고 있어야 함 */
-  flows?: string[]
-  /** 아무것도 흐르면 안 됨 */
-  noFlow?: boolean
-  note?: string
-}
 interface Case {
   name: string
   note: string
@@ -41,6 +35,7 @@ interface Case {
   checks: Check[]
   speech: string[]
   events: InkEvent[]
+  inputs?: RecordedInput[]
 }
 
 const dir = join(__dirname, '../../cases')
@@ -70,7 +65,7 @@ async function settle(p: Pipeline, max = 20000) {
 }
 
 function order(p: Pipeline, ids: string[]) {
-  return p.board.objs
+  return p.board.values()
     .filter((o) => ids.includes(o.id) && o.read)
     .map((o) => ({ v: o.read!, x: p.engine.settled(o.id)!.x }))
     .sort((a, b) => a.x - b.x)
@@ -105,24 +100,66 @@ interface Result {
 async function runOnce(c: Case) {
   const bus = new InkBus()
   const p = new Pipeline(bus, { headless: true })
-  p.aiStatus = 'checking' // 필기 재생 동안은 AI 끔
-  for (const e of c.events) bus.emit(e)
-  for (const [id, v] of Object.entries(c.read ?? {})) {
-    const o = p.board.get(id)
-    if (o) o.read = v
+  const ids = Object.keys(c.read ?? {})
+  const label = () => {
+    for (const o of p.board.values()) if (c.read?.[o.id]) o.read = c.read[o.id]
   }
-  await settle(p, 1000)
-  p.resetAnimation() // 그리는 동안 생긴 즉시 반응(화살표 흐름 등)은 지우고 말부터 채점
-  p.aiStatus = 'ready'
   const got: string[] = []
+  let moved: string[] = []
+  let before = ''
+  p.log = (type, data) => {
+    if (type === 'applied') for (const op of data.ops as { v: string; id?: string }[]) {
+      if (op.v === 'move' && op.id) moved.push(op.id)
+    }
+  }
+  const capture = (): string => JSON.stringify({
+    order: order(p, ids), before, moved: [...new Set(moved)],
+    overlap: p.engine.overlaps().map((x) => x.join('·')), flows: p.engine.flows.map((f) => f.along),
+  } satisfies Frame)
+  if (TIMED && c.inputs?.length) {
+    let utterance = -1
+    const advance = async (ms: number) => {
+      const end = performance.now() + ms
+      let last = performance.now()
+      while (performance.now() < end) {
+        await wait(Math.min(16, end - performance.now()))
+        const now = performance.now()
+        p.tick(now, Math.min(.05, (now - last) / 1000))
+        last = now
+      }
+    }
+    await replayInputs(p, bus, c.inputs, advance, (input) => {
+      label() // 라벨을 공급하는 시간 재현 평가. 실제 OCR 평가는 아니다.
+      if (input.type === 'final' && input.text?.trim()) {
+        if (utterance >= 0) got[utterance] = capture()
+        utterance++
+        before = order(p, ids)
+        moved = []
+      }
+    })
+    await settle(p)
+    if (utterance >= 0) got[utterance] = capture()
+    p.resetAnimation()
+    return got
+  }
+  p.aiStatus = 'checking'
+  const inkTime = (e: InkEvent) => e.type === 'stroke' ? e.stroke.points.at(-1)?.t ?? 0
+    : e.type === 'point' ? e.points.at(-1)?.t ?? 0 : 't' in e ? e.t : 0
+  const offset = performance.now() - Math.max(0, ...c.events.map(inkTime))
+  for (const e of c.events) bus.emit(rebaseInk(e, inkTime(e) + offset))
+  label()
+  await settle(p, 1000)
+  p.resetAnimation()
+  p.aiStatus = 'ready'
   const last = Math.max(...c.checks.map((k) => k.after))
   for (let i = 0; i <= last; i++) {
+    before = order(p, ids)
+    moved = []
     await speak(p, c.speech[i])
     await settle(p)
-    const ov = p.engine.overlaps()
-    const flows = p.engine.flows.map((f) => f.along)
-    got[i] = JSON.stringify({ order: order(p, Object.keys(c.read ?? {})), overlap: ov.map((x) => x.join('·')), flows })
+    got[i] = capture()
   }
+  p.resetAnimation()
   return got
 }
 
@@ -135,23 +172,17 @@ describe.skipIf(!process.env.EVAL)('AI 동작 채점', () => {
         cases.map(async (c) => {
           const runs = await Promise.all(Array.from({ length: RUNS }, () => runOnce(c)))
           for (const k of c.checks) {
-            const expected = [k.order, k.flows ? `흐름 ${k.flows.join(',')}` : '', k.noFlow ? '흐름 없음' : ''].filter(Boolean).join(' ')
+            const expected = [k.order, k.flows ? `흐름 ${k.flows.join(',')}` : '', k.noFlow ? '흐름 없음' : '', k.unchanged ? '이동 없음' : '', k.forbiddenMoved ? `이동 금지 ${k.forbiddenMoved.join(',')}` : ''].filter(Boolean).join(' ')
             results.push({ case: c.name, after: k.after, speech: c.speech[k.after], expected, check: k, got: runs.map((r) => r[k.after]) })
           }
         }),
       )
       const ok = (r: Result, g: string) => {
-        const s = JSON.parse(g) as { order: string; overlap: string[]; flows: string[] }
-        const k = r.check
-        if (s.overlap.length) return false
-        if (k.order && !k.order.split('|').map((x) => x.trim()).includes(s.order)) return false
-        if (k.flows && !k.flows.every((id) => s.flows.includes(id))) return false
-        if (k.noFlow && s.flows.length) return false
-        return true
+        return passes(r.check, JSON.parse(g) as Frame)
       }
       const show = (g: string) => {
-        const s = JSON.parse(g) as { order: string; overlap: string[]; flows: string[] }
-        return [s.order, s.overlap.length ? `겹침 ${s.overlap.join(',')}` : '', s.flows.length ? `흐름 ${s.flows.join(',')}` : ''].filter(Boolean).join(' ')
+        const s = JSON.parse(g) as Frame
+        return [s.order, s.overlap.length ? `겹침 ${s.overlap.join(',')}` : '', s.flows.length ? `흐름 ${s.flows.join(',')}` : '', s.moved.length ? `이동 ${s.moved.join(',')}` : ''].filter(Boolean).join(' ')
       }
       let pass = 0
       let total = 0
@@ -169,12 +200,14 @@ describe.skipIf(!process.env.EVAL)('AI 동작 채점', () => {
           lines.push(`[${r.after}] ${marks} 기대 ${r.expected}${bad.length ? ` / 실제 ${[...new Set(bad.map(show))].join(', ')}` : ''}  — ${r.speech.slice(0, 40)}`)
         }
       }
-      const head = `# AI 동작 채점: 전체 ${pass}/${total} (${Math.round((100 * pass) / total)}%)`
+      const fullRuns = cases.reduce((n, c) => n + Array.from({ length: RUNS }, (_, run) => results.filter((r) => r.case === c.name).every((r) => ok(r, r.got[run]))).filter(Boolean).length, 0)
+      const head = `# AI 동작 채점: 전체 ${pass}/${total} (${Math.round((100 * pass) / total)}%)\n모드: ${TIMED ? '시간 재현 (inputs 없는 기존 사례는 순차)' : '순차'} / 손글씨 정답 라벨 주입, OCR 제외\n사례 전체 성공: ${fullRuns}/${cases.length * RUNS}\n통과 기준: ${MIN_PASS * 100}%`
       const report = [head, ...lines].join('\n')
       console.log('\n' + report)
       mkdirSync('logs', { recursive: true })
       writeFileSync(`logs/eval-${new Date().toISOString().replace(/[:.]/g, '-')}.md`, report + '\n')
       expect(total).toBeGreaterThan(0)
+      expect(pass / total, report).toBeGreaterThanOrEqual(MIN_PASS)
     },
     30 * 60 * 1000,
   )

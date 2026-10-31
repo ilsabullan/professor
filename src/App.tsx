@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { AnimationOverlay } from './animation/AnimationOverlay'
 import type { Pipeline } from './animation/pipeline'
 import { DevPanel } from './dev/DevPanel'
-import { flush, logSession } from './dev/testlog'
+import { flush, getLogSequence, getLogStatus, logSession, subscribeLogStatus } from './dev/testlog'
 import { LESSONS, type Lesson, PAGE_H, PAGE_W } from './dev/lessons'
 import type { TestBoardController } from './testboard/controller'
 import { TestBoard } from './testboard/TestBoard'
@@ -19,12 +19,16 @@ export function App({ pipeline, board }: { pipeline: Pipeline; board: TestBoardC
   useSyncExternalStore(pipeline.subscribe, pipeline.getVersion)
   const [lesson, setLesson] = useState<Lesson>(LESSONS[0])
   const [issues, setIssues] = useState(0)
+  const logStatus = useSyncExternalStore(subscribeLogStatus, getLogStatus)
+  const [submissions, setSubmissions] = useState<number[]>([])
+  const savedSubmissions = submissions.filter((n) => n <= logStatus.savedThrough).length
 
   const submit = () => {
     const note = window.prompt('이번 실측 보내기. 한 줄 메모 (비워도 됨)')
     if (note === null) return
     pipeline.submit(note)
-    flush()
+    setSubmissions((items) => [...items, getLogSequence()])
+    void flush()
   }
 
   const markIssue = () => {
@@ -48,8 +52,11 @@ export function App({ pipeline, board }: { pipeline: Pipeline; board: TestBoardC
         <span className="sub">교수자 · 애니메이션 레이어 테스트 · 기록 {logSession}</span>
         <div className="chips">
           <button className="btn sm" onClick={submit}>
-            📤 보내기{pipeline.submitted ? ` (${pipeline.submitted})` : ''}
+            📤 보내기{savedSubmissions ? ` (저장 ${savedSubmissions})` : ''}
           </button>
+          <span className={'chip ' + (logStatus.error ? 'bad' : logStatus.pending ? 'warn' : 'ok')} role="status">
+            {!import.meta.env.DEV ? '자동 기록 꺼짐' : logStatus.error ? `기록 저장 실패 · ${logStatus.errorMessage || '연결 실패'} · 재시도 대기 ${logStatus.pending}건` : logStatus.pending ? `기록 ${logStatus.saving ? '저장 중' : '대기'} ${logStatus.pending}건` : '기록 저장 확인됨'}
+          </span>
           <button className="btn sm issue" onClick={markIssue}>
             🚩 문제 표시{issues ? ` (${issues})` : ''}
           </button>

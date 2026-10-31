@@ -3,7 +3,7 @@ import type { Engine } from '../engine'
 
 /** 바뀌지 않는 시스템 프롬프트. 캐시되므로 요청마다 바꾸지 않는다 */
 export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 엔진이다. 교수자가 강의 자료(PDF) 위에 필기하며 설명한다. 그린 것과 방금 한 말을 보고, 지금 설명하는 '시간에 따라 변하는 과정'을 칠판 위 애니메이션으로 이어서 보여줄 단계 대본을 만든다.
-속도가 가장 중요하다. 고민하지 말고 바로 첫 줄부터 출력한다. 짧게 쓴다.
+현재 설명의 대상과 결과를 정확히 맞춘다. 짧게 쓰고 한 단계를 완성된 JSON 한 줄로 출력한다.
 
 출력 형식: 한 줄에 JSON 객체 하나(NDJSON). 코드블록·설명 금지. 키 순서를 지킨다.
 - 단계 한 줄: {"ops":[연산,...],"cap":"학생용 자막(20자 이내)"}
@@ -42,6 +42,10 @@ export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 �
 - 움직임은 교수자가 그 결과를 말했을 때만 쓴다: "바뀐다/교환한다/뒤로(앞으로) 간다/옮긴다". 이때는 비교만 보여주고 끝내지 않는다.
 - "비교해 보자/뭐가 더 클까/~를 비교한다/정렬해 보자/정렬한다(시작)"는 아직 결과가 아니다. 해당 값을 pulse·color로 강조만 하고 move하지 않는다. 다음에 무엇이 될지 앞질러 보여주지 않는다.
 - '지금 말하는 중'은 끝나지 않은 문장이다. 그 안에서 결과가 분명히 말해진 만큼만 반영한다.
+- 말하는 중에는 pulse/color로만 미리 강조한다. move 등 상태 변경은 확정 발화에만 출력한다.
+- '이번 입력의 실행 범위'와 특정된 대상이 있으면 반드시 따른다. '둘'은 현재 비교 대상으로 특정된 두 객체다. 직전의 다른 비교 대상을 다시 쓰지 않는다.
+- 밑줄/강조 표시는 손글씨 값이 아니다. read에 넣거나 배열 원소로 이동하지 않는다.
+- JSON이 끊기면 동작은 실행되지 않는다. 교환 move 둘을 반드시 한 줄의 ops 배열 안에 함께 넣는다.
 - 강의 내용과 관계없는 말(잡담·혼잣말·주변 대화·질문 되묻기)이면 {"none":true}.
 - 정렬이 "완성된다/끝난다"고 하면 '읽음' 값을 실제로 정렬해 남은 교환을 한 단계씩 move로 보여주고, 마지막에는 완전히 정렬된 상태여야 한다.
 
@@ -78,6 +82,8 @@ function describeObjs(board: Board, engine: Engine) {
     const off = engine.offset(o.id)
     const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
     const rep = o.replaces ? ` [지운 ${o.replaces} 자리에 새로 씀]` : ''
+    const under = board.underlineOf(o.id)
+    if (under) return `${o.id} 밑줄(${under} 아래 강조. 숫자/이동 대상/흐름 경로 아님)`
     if (o.kind === 'box') return `${o.id} 상자 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
     if (o.kind === 'line' && o.pts) {
       const under = board.underlineOf(o.id)
@@ -93,11 +99,11 @@ function describeObjs(board: Board, engine: Engine) {
     return `${o.id} 손글씨/기호${read} 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)}) x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
   })
   // 읽은 값을 지금 위치의 왼쪽→오른쪽 순서로 (자리를 바꾼 뒤에도 실제 순서가 바로 보이게)
-  const readOrder = board.objs
-    .filter((o) => o.kind === 'mark' && o.read)
+  const readOrder = board.values()
+    .filter((o) => o.read || o.text)
     .map((o) => ({ o, x: nowBox(board, engine, o.id).x }))
     .sort((a, b) => a.x - b.x)
-    .map(({ o }) => `${o.read}(${o.id})`)
+    .map(({ o }) => `${o.read ?? o.text}(${o.id})`)
   const overlaps = engine.overlaps().map(([a, b]) => `${a}·${b}`)
   return [
     ...lines,

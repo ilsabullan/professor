@@ -182,6 +182,7 @@ export function DevPanel({
 
       <section>
         <h2>측정 요약 (행동 → AI 첫 동작)</h2>
+        <div className="note">중앙값·90%·1초 이내는 첫 동작이 관측된 요청만 기준입니다. 미확정 발화 요청은 제외하며, 무반응은 의도된 결과일 수도 있습니다. 음성 기준 시각은 인식 결과로 추정합니다.</div>
         {summary.length === 0 ? (
           <div className="note">기록이 없어요. 그리거나 말하면 쌓여요.</div>
         ) : (
@@ -189,10 +190,10 @@ export function DevPanel({
             <thead>
               <tr>
                 <th className="l">설정</th>
-                <th>요청</th>
+                <th>반응/전체</th>
                 <th>중앙값</th>
                 <th>90%</th>
-                <th>1초 이내</th>
+                <th>반응 중 1초</th>
                 <th>즉시</th>
               </tr>
             </thead>
@@ -212,6 +213,11 @@ export function DevPanel({
             </tbody>
           </table>
         )}
+        {summary.map((g) => (
+          <div className="note" key={g.cfg}>
+            {g.cfg}: 중단 {g.aborted} · 오류 {g.errors} · 무반응 {g.noMovement} · 보류 {g.held} · 진행 중 {g.pending}
+          </div>
+        ))}
         <div className="row">
           <button
             className="btn sm"

@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto'
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { getDevAccessCode } from './server/accessCode.ts'
+import { resolve } from 'node:path'
+import { createLogStore } from './server/logStore.ts'
 import { networkInterfaces } from 'node:os'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -17,7 +17,7 @@ function lanAddresses() {
 
 /**
  * 내부망에 열 때 API 키를 지키는 접속 코드.
- * 서버를 켤 때마다 새 코드를 만들고, ?k=코드 로 한 번 연 기기에만 쿠키를 준다.
+ * 프로세스 시작 시 코드를 만들고(설정 자동 재시작에는 유지), ?k=코드 로 한 번 연 기기에만 쿠키를 준다.
  * /api/* (Anthropic 프록시 포함)는 이 Mac 자신이거나 쿠키가 있어야 쓸 수 있다.
  */
 function accessCode(code: string): Plugin {
@@ -52,7 +52,7 @@ function accessCode(code: string): Plugin {
  * imageB64 필드는 logs/<세션>/<종류>-<번호>.jpg 파일로 빼고 경로만 남긴다.
  */
 function testLog(): Plugin {
-  const dir = resolve('logs')
+  const store = createLogStore(resolve('logs'))
   return {
     name: 'test-log',
     configureServer(server) {
@@ -70,23 +70,9 @@ function testLog(): Plugin {
         })
         req.on('end', () => {
           try {
-            const { session, entries } = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-              session: string
-              entries: Record<string, unknown>[]
-            }
-            if (!/^[\w-]{6,64}$/.test(session) || !Array.isArray(entries)) throw new Error('bad payload')
-            mkdirSync(join(dir, session), { recursive: true })
-            const lines = entries.map((e) => {
-              if (typeof e.imageB64 === 'string') {
-                const name = `${String(e.type)}-${String(e.n)}.jpg`
-                writeFileSync(join(dir, session, name), Buffer.from(e.imageB64, 'base64'))
-                delete e.imageB64
-                e.imageFile = `logs/${session}/${name}`
-              }
-              return JSON.stringify(e)
-            })
-            appendFileSync(join(dir, `${session}.jsonl`), lines.join('\n') + '\n')
-            res.end('ok')
+            const result = store(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify(result))
           } catch (err) {
             res.statusCode = 400
             res.end(String(err))
@@ -118,7 +104,7 @@ export default defineConfig(({ mode }) => {
   // 세 번째 인자 '' = VITE_ 접두사 없는 변수도 읽음 (서버 쪽에서만 사용)
   const env = loadEnv(mode, process.cwd(), '')
   const key = env.ANTHROPIC_API_KEY ?? ''
-  const code = randomBytes(4).toString('hex')
+  const code = getDevAccessCode(env)
   // DEV_HTTP=1 이면 HTTPS 없이 (이 Mac에서 http://localhost 로만 확인할 때)
   const https = process.env.DEV_HTTP !== '1'
   return {

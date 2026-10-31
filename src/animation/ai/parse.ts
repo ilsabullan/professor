@@ -12,6 +12,8 @@ export interface ParsedStep {
   conf?: number
   /** 줄이 끝까지 도착함 */
   closed: boolean
+  /** JSON 전체가 유효한 경우에만 상태 변경을 실행할 수 있다. */
+  valid: boolean
 }
 
 export interface ParseResult {
@@ -93,6 +95,7 @@ function partialStep(line: string, closed: boolean): ParsedStep {
     cap: cap ? unescape(cap[1]) : '',
     conf: conf ? Number(conf[1]) : undefined,
     closed,
+    valid: false,
   }
 }
 
@@ -131,6 +134,7 @@ export function parseProgress(text: string): ParseResult {
           cap: typeof j.cap === 'string' ? j.cap : '',
           conf: typeof j.conf === 'number' ? j.conf : undefined,
           closed: true,
+          valid: true,
         })
         return
       } catch {

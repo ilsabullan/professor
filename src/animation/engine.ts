@@ -57,6 +57,7 @@ interface Tween {
   to: number
   t0: number
   dur: number
+  owner?: string
 }
 
 const INK = '#eef0e6'
@@ -74,10 +75,6 @@ export class Engine {
   private takenOver = new Set<string>()
   /** 지금 단계가 시작될 때의 위치 (한 단계 안의 move는 모두 이 기준으로 동시에 움직인다) */
   private frozen = new Map<string, Pt>()
-  /** 이번 단계의 move (id → 목적지 객체 id). 서로 맞바꾸는 쌍을 알아보려고 */
-  private stepMoves = new Map<string, string>()
-  /** 마지막으로 맞바꾼 쌍과 시각 */
-  private lastSwap: { pair: string; t: number } | null = null
 
   constructor(
     private board: Board,
@@ -98,6 +95,7 @@ export class Engine {
     this.spawned = {}
     this.flows = []
     this.tweens = []
+    this.frozen.clear()
   }
 
   /** 지워진 객체의 애니메이션 정리 */
@@ -120,8 +118,8 @@ export class Engine {
     this.hideStrokes(this.strokeIdsOf(o), true)
   }
 
-  private tween(set: (v: number) => void, from: number, to: number, dur: number, now: number) {
-    this.tweens.push({ set, from, to, t0: now, dur: Math.max(1, dur) })
+  private tween(set: (v: number) => void, from: number, to: number, dur: number, now: number, owner?: string) {
+    this.tweens.push({ set, from, to, t0: now, dur: Math.max(1, dur), owner })
   }
 
   /** 애니메이션이 대신 그리고 있는 객체인지 (원래 필기는 숨겨짐) */
@@ -132,7 +130,56 @@ export class Engine {
   /** 새 단계 시작: 단계 시작 위치 기록을 비운다 */
   beginStep() {
     this.frozen.clear()
-    this.stepMoves.clear()
+    for (const id of [...this.board.objs.map((o) => o.id), ...Object.keys(this.spawned)]) {
+      const p = this.settled(id)
+      if (p) this.frozen.set(id, p)
+    }
+  }
+
+  /** 보간 중인 픽셀이 아닌 확정 도착점과 필기 버전으로 오래된 응답을 판별한다. */
+  layoutKey() {
+    return JSON.stringify([
+      this.board.objs.map((o) => [o.id, o.t, o.strokes.length, o.bbox, this.settled(o.id)]),
+      Object.keys(this.spawned).sort().map((id) => [id, this.settled(id)]),
+    ])
+  }
+
+  /** 한 단계 전체를 미리 검사한다. 실패하면 어떤 동작/자막도 적용하지 않는다. */
+  validateStep(ops: Op[]): string | null {
+    const positions = new Map<string, Pt>()
+    for (const id of [...this.board.objs.map((o) => o.id), ...Object.keys(this.spawned)]) {
+      const p = this.settled(id)
+      if (p) positions.set(id, p)
+    }
+    for (const op of ops) if (op.v === 'spawn') {
+      if (positions.has(op.id)) return `이미 있는 객체 생성: ${op.id}`
+      const at = op.at ? { x: op.at[0], y: op.at[1] } : op.on ? positions.get(op.on) : { x: this.board.page.width / 2, y: this.board.page.height / 2 }
+      if (!at) return '생성 위치가 없음'
+      positions.set(op.id, at)
+    }
+    const goals = new Map(positions)
+    const moved = new Set<string>()
+    for (const op of ops) {
+      if ('id' in op && !positions.has(op.id)) return `없는 객체: ${op.id}`
+      if (op.v === 'flow' && !this.board.isFlowPath(op.along)) return '연결 경로가 아닌 선'
+      if (op.v !== 'move') continue
+      if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
+      moved.add(op.id)
+      const path = op.along ? this.linePts(op.along) : null
+      const to = op.along ? path?.at(-1) : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
+      if (!to || to.x < 0 || to.y < 0 || to.x > this.board.page.width || to.y > this.board.page.height) return '유효한 도착지가 없음'
+      goals.set(op.id, to)
+    }
+    const values = this.board.values()
+    for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) {
+      const a = values[i], b = values[j]
+      if (!moved.has(a.id) && !moved.has(b.id)) continue
+      const pa = goals.get(a.id)!, pb = goals.get(b.id)!
+      const iw = Math.min(pa.x + a.bbox.w / 2, pb.x + b.bbox.w / 2) - Math.max(pa.x - a.bbox.w / 2, pb.x - b.bbox.w / 2)
+      const ih = Math.min(pa.y + a.bbox.h / 2, pb.y + b.bbox.h / 2) - Math.max(pa.y - a.bbox.h / 2, pb.y - b.bbox.h / 2)
+      if (iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.bbox.w * a.bbox.h, b.bbox.w * b.bbox.h)) return `이동 후 겹침: ${a.id}, ${b.id}`
+    }
+    return null
   }
 
   /** 움직임이 끝났을 때 놓일 중심 (진행 중인 애니메이션의 도착지) */
@@ -164,7 +211,7 @@ export class Engine {
 
   /** 손글씨·글자끼리 크게 겹친 쌍 (AI에게 알려 스스로 바로잡게) */
   overlaps(): [string, string][] {
-    const items = this.board.objs.filter((o) => o.kind === 'mark' || o.kind === 'text')
+    const items = this.board.values()
     const boxes = items.map((o) => {
       const off = this.offset(o.id)
       return { id: o.id, x: o.bbox.x + off.x, y: o.bbox.y + off.y, w: o.bbox.w, h: o.bbox.h }
@@ -242,16 +289,6 @@ export class Engine {
         return 400
       }
       case 'move': {
-        // 방금(15초 안) 맞바꾼 두 객체를 다시 맞바꾸면 되돌리기가 되므로 무시한다
-        // (말하는 중 요청과 확정 요청이 같은 교환을 두 번 실행하던 문제)
-        if (typeof op.to === 'string') {
-          const pair = [op.id, op.to].sort().join('|')
-          if (this.lastSwap && this.lastSwap.pair === pair && now - this.lastSwap.t < 15000 && this.stepMoves.get(op.to) !== op.id) {
-            return 0
-          }
-          this.stepMoves.set(op.id, op.to)
-          if (this.stepMoves.get(op.to) === op.id) this.lastSwap = { pair, t: now }
-        }
         // 출발점과 도착점 모두 '이 단계가 시작될 때의 위치' 기준. 같은 단계의 move들은 동시에 움직이므로
         // o7→o8, o8→o7 을 같이 쓰면 교환이 된다. 도착지에 무엇이 있든 엔진이 따로 손대지 않는다
         const from = this.startPos(op.id)
@@ -259,6 +296,9 @@ export class Engine {
         const sp = this.spawned[op.id]
         if (!sp) this.takeOver(op.id)
         const a = this.A(op.id)
+        // 새 이동이 시작된 뒤 이전 tween/path가 화면 좌표를 다시 덮어쓰지 않게 한다.
+        this.tweens = this.tweens.filter((w) => w.owner !== op.id)
+        a.path = null
         if (op.along) {
           const pts = this.linePts(op.along)
           if (!pts) return 0
@@ -279,15 +319,15 @@ export class Engine {
         if (sp) {
           sp.gx = to.x
           sp.gy = to.y
-          this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now)
-          this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now)
+          this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now, op.id)
+          this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now, op.id)
         } else {
           const gx = this.offset(op.id).x + to.x - from.x
           const gy = this.offset(op.id).y + to.y - from.y
           a.gx = gx
           a.gy = gy
-          this.tween((v) => (a.dx = v), a.dx, gx, op.dur, now)
-          this.tween((v) => (a.dy = v), a.dy, gy, op.dur, now)
+          this.tween((v) => (a.dx = v), a.dx, gx, op.dur, now, op.id)
+          this.tween((v) => (a.dy = v), a.dy, gy, op.dur, now, op.id)
         }
         return op.dur
       }
@@ -515,18 +555,23 @@ export interface PlayStep {
   open: boolean
   startedAt: number | null
   maxDur: number
+  commitKey?: string
+  validate?: () => string | null
+  onApplied?: () => void
 }
 
 /** 단계를 순서대로 재생한다. 도착한 동작은 단계 안에서 즉시 실행 */
 export class Player {
   queue: PlayStep[] = []
   current: PlayStep | null = null
+  private committed = new Set<string>()
 
   constructor(
     private engine: Engine,
     private hooks: {
       onFirstOp: (step: PlayStep, now: number) => void
       onCaption: (step: PlayStep) => void
+      onRejected?: (step: PlayStep, reason: string) => void
     },
   ) {}
 
@@ -540,30 +585,49 @@ export class Player {
   /** 중단된 요청의 남은 단계를 버린다. 이미 재생 중인 단계는 마저 끝낸다 */
   drop(reqId: number) {
     this.queue = this.queue.filter((s) => s.reqId !== reqId)
-    if (this.current?.reqId === reqId) this.current.open = false
+    if (this.current?.reqId === reqId && this.current.applied === 0) this.current = null
   }
 
   clear() {
     this.queue = []
     this.current = null
+    this.committed.clear()
+  }
+
+  cancelPending() {
+    this.queue = []
+    if (this.current?.applied === 0) this.current = null
   }
 
   tick(now: number) {
     if (!this.current) {
       this.current = this.queue.shift() ?? null
-      if (this.current) {
-        this.current.startedAt = now
-        this.engine.beginStep()
-      }
     }
     const s = this.current
     if (!s) return
+    // 교환의 한쪽만 먼저 움직이지 않는다. 완성된 단계 전체를 함께 검증·적용한다.
+    if (s.open) return
+    if (s.applied === 0) {
+      const reason = (s.commitKey && this.committed.has(s.commitKey) ? '이미 반영한 발화의 동작' : null)
+        ?? s.validate?.() ?? this.engine.validateStep(s.ops)
+      if (reason) {
+        this.hooks.onRejected?.(s, reason)
+        this.current = null
+        return
+      }
+      this.engine.beginStep()
+      s.startedAt = now
+      if (s.commitKey) this.committed.add(s.commitKey)
+    }
+    let applied = false
     while (s.applied < s.ops.length) {
       const d = this.engine.applyOp(s.ops[s.applied], now)
-      if (s.applied === 0) this.hooks.onFirstOp(s, now)
+      if (s.applied === 0 && d > 0) this.hooks.onFirstOp(s, now)
       s.applied++
+      applied ||= d > 0
       s.maxDur = Math.max(s.maxDur, (now - (s.startedAt ?? now)) + d)
     }
+    if (applied) s.onApplied?.()
     if (s.cap && !s.capShown) {
       s.capShown = true
       this.hooks.onCaption(s)
