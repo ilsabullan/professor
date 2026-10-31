@@ -52,7 +52,15 @@ const EMPTY: Stroke[] = [];
 type History = { undo: Stroke[][]; redo: Stroke[][] };
 type XY = { x: number; y: number };
 type TouchGesture =
-  | { kind: "drag"; mode: "undecided" | "pan" | "swipe"; start: XY; last: XY; lastTime: number; speed: number }
+  | {
+      kind: "drag";
+      mode: "undecided" | "pan" | "swipe";
+      start: XY;
+      last: XY;
+      lastTime: number;
+      speed: number;
+      over: number; // 확대 상태에서 가로 끝을 넘어 더 민 거리 (넘기기로 이어진다)
+    }
   | {
       kind: "pinch";
       d0: number;
@@ -338,6 +346,25 @@ export function Editor({
       }, SLIDE_MS);
       return;
     }
+    if (zoom > 1) {
+      // 확대 상태에서는 옆에 붙여 둔 페이지가 없어서, 지금 페이지를 내보낸 뒤 새 페이지를 화면에 맞춘 크기로 반대편에서 들여온다
+      setWrapTransform(`translate3d(${-dir * width}px, 0, 0)`, SLIDE_EASE);
+      window.setTimeout(() => {
+        flushSync(() => {
+          setPageIndex(target);
+          setZoom(1);
+        });
+        stage.scrollTo(0, 0);
+        setWrapTransform(`translate3d(${dir * width}px, 0, 0)`);
+        void wrapRef.current?.offsetWidth; // 시작 위치를 먼저 적용해야 들어오는 움직임이 보인다
+        setWrapTransform("translate3d(0, 0, 0)", SLIDE_EASE);
+        window.setTimeout(() => {
+          setWrapTransform("");
+          sliding.current = false;
+        }, SLIDE_MS);
+      }, SLIDE_MS);
+      return;
+    }
     // 옆에 붙어 있던 페이지가 가운데로 들어올 때까지 함께 민 다음, 같은 순간에 진짜 페이지로 바꿔 끼운다
     setWrapTransform(`translate3d(${-dir * width}px, 0, 0)`, SLIDE_EASE);
     window.setTimeout(() => {
@@ -360,7 +387,7 @@ export function Editor({
     const p = { x: e.clientX, y: e.clientY };
     touches.current.set(e.pointerId, p);
     if (touches.current.size === 1) {
-      touchGesture.current = { kind: "drag", mode: "undecided", start: p, last: p, lastTime: e.timeStamp, speed: 0 };
+      touchGesture.current = { kind: "drag", mode: "undecided", start: p, last: p, lastTime: e.timeStamp, speed: 0, over: 0 };
     } else if (touches.current.size === 2) {
       if (touchGesture.current?.kind === "drag" && touchGesture.current.mode === "swipe") setWrapTransform("");
       startPinch();
@@ -403,7 +430,28 @@ export function Editor({
       g.mode = zoom <= ZOOM_MIN && Math.abs(tx) > Math.abs(ty) ? "swipe" : "pan";
     }
     if (g.mode === "pan") {
-      scrollStage(-dx, -dy);
+      // 확대 상태: 가로 끝까지 이동한 뒤 같은 방향으로 더 밀면 페이지를 끌어서 넘기기로 이어 간다
+      const stage = stageRef.current!;
+      const maxX = stage.scrollWidth - stage.clientWidth;
+      const pushingEdge =
+        Math.abs(dx) > Math.abs(dy) && ((dx > 0 && stage.scrollLeft <= 1) || (dx < 0 && stage.scrollLeft >= maxX - 1));
+      if (g.over === 0 && !pushingEdge) {
+        scrollStage(-dx, -dy);
+        return;
+      }
+      const over = g.over + dx;
+      if (g.over !== 0 && Math.sign(over) !== Math.sign(g.over)) {
+        // 반대로 되돌리면 다시 화면 이동으로
+        g.over = 0;
+        setWrapTransform("");
+        scrollStage(-over, -dy);
+        return;
+      }
+      g.over = over;
+      const target = pageIndex + (over < 0 ? 1 : -1);
+      const hasTarget = target >= 0 && target < (lectureRef.current?.pages.length ?? 0);
+      scrollStage(0, -dy);
+      queueWrapTransform(`translate3d(${hasTarget ? over : over * 0.3}px, 0, 0)`);
     } else {
       let tx = p.x - g.start.x;
       const atEdge = (tx > 0 && pageIndex === 0) || (tx < 0 && pageIndex >= (lectureRef.current?.pages.length ?? 1) - 1);
@@ -430,6 +478,8 @@ export function Editor({
       touchGesture.current = { kind: "idle" };
     } else if (g?.kind === "drag" && g.mode === "swipe") {
       finishSwipe(g.last.x - g.start.x, g.speed);
+    } else if (g?.kind === "drag" && g.mode === "pan" && g.over !== 0) {
+      finishSwipe(g.over, g.speed);
     }
     if (touches.current.size === 0) touchGesture.current = null;
   };
