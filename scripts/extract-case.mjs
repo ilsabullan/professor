@@ -5,6 +5,7 @@
 // 화면에 "말 → AI 반응 → ✓/✗" 타임라인을 출력하니, 보고 cases/<이름>.json 의 checks 를 채운다.
 //   checks: [{ "after": <말 번호>, "order": "3 5 8 1" | "3 5 8 1|3 5 1 8", "note": "..." }]
 //   (order = 읽은 손글씨 값을 왼쪽→오른쪽으로 놓은 순서. | 로 허용 답을 여러 개)
+// 다시 뽑아도 read, checks, expect, split, strokeLabels 는 유지된다. 획 라벨은 scripts/render-case.mjs 그림을 보고 붙인다.
 // 필기 해석 기대(expect: marks, boxes, underlines, arrows)는 npm test 가, checks 는 npm run eval 이 확인한다.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
@@ -63,8 +64,10 @@ const file = `cases/${name}.json`
 const prev = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
 // AI가 읽은 값은 정답이 아니다. 새 사례의 read는 검토 후 수동으로 붙인다.
 const out = { name, note: note || prev.note || '', source: log, sourceRange: [lines[0].n, lines.at(-1).n],
-  expect: prev.expect ?? {}, read: prev.read ?? {}, observedRead: read, checks: prev.checks ?? [],
+  split: prev.split ?? 'calib', expect: prev.expect ?? {}, read: prev.read ?? {}, observedRead: read, checks: prev.checks ?? [],
+  ...(prev.strokeLabels ? { strokeLabels: prev.strokeLabels } : {}),
   speech, events, inputs, failures }
-writeFileSync(file, JSON.stringify(out) + '\n')
+// 키마다 한 줄: 라벨을 고친 diff가 읽히게
+writeFileSync(file, `{\n${Object.entries(out).map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(',\n')}\n}\n`)
 console.log(`${file}: 필기 이벤트 ${events.length}개, 말 ${speech.length}개, 읽은 값 ${JSON.stringify(read)}\n`)
 console.log(timeline.join('\n'))
