@@ -300,8 +300,12 @@ export class Engine {
         this.tweens = this.tweens.filter((w) => w.owner !== op.id)
         a.path = null
         if (op.along) {
-          const pts = this.linePts(op.along)
-          if (!pts) return 0
+          const line = this.linePts(op.along)
+          if (!line) return 0
+          // 물체가 그 선 위(근처)에 있으면 선을 타고 가고, 떨어져 있으면 선의 모양대로 제자리에서 같은 만큼 옮긴다
+          // (그래프를 x축 "방향으로" 옮기라는데 그래프가 축 위로 뛰어가던 문제)
+          const onLine = line.some((q) => Math.hypot(q.x - from.x, q.y - from.y) < 40)
+          const pts = onLine ? line : line.map((q) => ({ x: q.x - line[0].x + from.x, y: q.y - line[0].y + from.y }))
           const end = pts[pts.length - 1]
           const base = sp ? { x: 0, y: 0 } : { x: from.x - this.offset(op.id).x, y: from.y - this.offset(op.id).y }
           a.path = { pts, t0: now, dur: op.dur, base }

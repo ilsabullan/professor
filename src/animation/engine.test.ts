@@ -120,3 +120,16 @@ describe('발화 단위 실행', () => {
     expect(captions).toEqual([])
   })
 })
+
+describe('선을 따라 이동 (along)', () => {
+  it('선에서 떨어진 물체는 선 위로 올라타지 않고 선의 방향·길이만큼 제자리에서 옮겨진다 (실측: 그래프가 축으로 뛰어감)', () => {
+    const { b, e } = setup()
+    // 아래쪽 가로선(축): (100,600)→(300,600)
+    const pts = Array.from({ length: 21 }, (_, i) => ({ x: 100 + i * 10, y: 600, p: 0.5, t: i }))
+    b.objs.push({ id: 'ax', kind: 'line', strokes: [{ id: 'sax', pts }], bbox: { x: 100, y: 600, w: 200, h: 1 }, pts, t: 0 })
+    e.beginStep()
+    e.applyOp({ v: 'move', id: 'o1', along: 'ax', dur: 500 }, 0)
+    e.tick(10_000, 0.05)
+    expect(e.settled('o1')).toEqual({ x: 400, y: 300 })
+  })
+})
