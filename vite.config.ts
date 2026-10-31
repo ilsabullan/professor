@@ -1,4 +1,4 @@
-import { getDevAccessCode } from './server/accessCode.ts'
+import { getDevAccessCode, isDirectLocal } from './server/accessCode.ts'
 import { resolve } from 'node:path'
 import { createLogStore } from './server/logStore.ts'
 import { networkInterfaces } from 'node:os'
@@ -6,8 +6,6 @@ import type { ClientRequest, IncomingMessage } from 'node:http'
 import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import basicSsl from '@vitejs/plugin-basic-ssl'
-
-const isLocal = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
 
 function lanAddresses() {
   return Object.values(networkInterfaces())
@@ -19,7 +17,7 @@ function lanAddresses() {
 /** 이 Mac 자신이거나 접속 코드 쿠키가 있는 요청 */
 function hasAccess(req: IncomingMessage, code: string) {
   const cookie = /(?:^|;\s*)lb_code=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
-  return isLocal(req.socket.remoteAddress ?? '') || cookie === code
+  return isDirectLocal(req.socket.remoteAddress, req.headers) || cookie === code
 }
 
 /**
@@ -159,6 +157,8 @@ export default defineConfig(({ mode }) => {
     server: {
       // 같은 와이파이의 다른 기기에서 접속 가능. 마이크·음성 인식 때문에 HTTPS(자체 인증서)
       host: true,
+      // Cloudflare 임시 터널로 iPad 등에서 열 때. /api/* 는 접속 코드가 지킨다
+      allowedHosts: ['.trycloudflare.com'],
       proxy: {
         ...sttProxy(code, env),
         '/api/anthropic': {

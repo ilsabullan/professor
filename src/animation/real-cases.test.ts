@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { Board } from './board'
 import { Engine } from './engine'
+import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { groundSpeech, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
@@ -14,6 +15,7 @@ interface RecordedCase {
   failures: { n: number; request?: { kind: string; desc: string; raw: string } }[]
 }
 const fixture = (name: string): RecordedCase => JSON.parse(readFileSync(new URL(`../../cases/${name}.json`, import.meta.url), 'utf8'))
+const c35 = fixture('real-sort-035007')
 const boardFor = (c: RecordedCase) => { const b = new Board(); c.events.forEach((e) => b.apply(e)); return b }
 
 describe('최신 실측 회귀', () => {
@@ -66,6 +68,21 @@ describe('최신 실측 회귀', () => {
     expect(b.values().some((o) => o.strokes.some((s) => s.id === 's25'))).toBe(false)
   })
 
+  it('iPad 실측(035007)의 되돌아온 중복 점을 빼서 곧은 칸 구분선을 선으로 본다', () => {
+    const b = boardFor(fixture('real-sort-035007'))
+    const kindOf = (sid: string) => b.objs.find((o) => o.strokes.some((s) => s.id === sid))?.kind
+    expect(['s24', 's26', 's27', 's28'].map(kindOf)).toEqual(['line', 'line', 'line', 'line'])
+    expect(kindOf('s33')).toBe('mark') // 마지막 칸의 숫자 1은 그대로 손글씨
+    const s33 = c35.events.find((e) => e.type === 'stroke' && e.stroke.id === 's33')
+    expect(s33?.type === 'stroke' && dropRevisits(s33.stroke.points).length).toBeLessThan(s33?.type === 'stroke' ? s33.stroke.points.length / 2 : 0)
+  })
+
+  it('iPad 실측(040451)의 위쪽 교환 화살표 몸통을 숫자 후보로 쓰지 않는다', () => {
+    const b = boardFor(fixture('real-sort-040451'))
+    const arc = b.objs.find((o) => o.strokes.some((s) => s.id === 's51'))!
+    expect(b.values().map((o) => o.id)).not.toContain(arc.id)
+  })
+
   it('혈액순환 실측에서 폐 윤곽 옆에 쓴 "O2"를 윤곽과 따로 둔다', () => {
     const b = boardFor(fixture('real-blood-012355'))
     const groups = b.objs.map((o) => o.strokes.map((s) => s.id).join('+'))
@@ -109,7 +126,7 @@ describe('04시 실측 회귀', () => {
   })
 
   it('04:04 정렬: 배열 위에 따로 쓴 8과 1을 바꾸는 응답은 다른 줄 교환으로 막는다', () => {
-    const c = fixture('real-parabola-040451')
+    const c = fixture('real-sort-040451')
     const f = c.failures.find((x) => x.n === 2017)!
     const b = boardAt(c, f.n)
     for (const [id, read] of Object.entries({ o6: '5', o7: '3', o8: '8', o9: '1', o16: '8' })) b.get(id)!.read = read
@@ -132,7 +149,7 @@ describe('막는 규칙 강도 (04:19 지구 공전 실측)', () => {
   const text = '반대편으로 가도 축을 같은 방향이에요 그래서 지구가 돌면서 여름에서 겨울로'
   const orbit: Op[] = [sanitizeOp({ v: 'move', id: 'o1', along: 'o8', loop: true, dur: 4000 })!]
   const setupEarth = () => {
-    const b = boardAt(fixture('real-earth-041959'), 951)
+    const b = boardAt(fixture('real-orbit-041959'), 951)
     return { b, g: groundSpeech(b, text, [], 'earth', 'preview') }
   }
 
