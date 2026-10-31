@@ -17,7 +17,8 @@ export interface Hints {
 const RATE: Record<CloudProvider, number> = { openai: 24000, gemini: 16000 }
 const CHUNK_MS = 100
 /** 이만큼 조용하면 한 발화를 닫는다 (OpenAI는 서버 VAD가 없어 직접 판단) */
-const END_SILENCE_MS = 700
+// 실측: 700ms에서는 "3" / "1이에요"처럼 문장이 잘게 쪼개져 같은 지시가 두 번 들어왔다
+const END_SILENCE_MS = 900
 /** 쉬지 않고 이어 말해도 이 길이마다 확정해 AI가 너무 늦게 반응하지 않게 */
 const MAX_TURN_MS = 12000
 /** Gemini: 받아쓰기 조각이 이만큼 끊기면 확정 */
@@ -34,7 +35,10 @@ export function hintsFromPage(text: string | undefined): Hints {
   const words = page.match(/[가-힣A-Za-z][가-힣A-Za-z0-9]{1,15}/g) ?? []
   const stop = /^(이다|있다|한다|된다|그리고|그러면|하면|에서|으로|하는|이후|다음|때문)$/
   const keywords = [...new Set(words.map((w) => w.replace(/(은|는|이|가|을|를|의|에|로|으로|와|과|도|만)$/, '')).filter((w) => w.length >= 2 && !stop.test(w)))].slice(0, 60)
-  return { prompt: page ? `${PROMPT_BASE} 강의 자료: ${page.slice(0, 400)}` : PROMPT_BASE, keywords }
+  // 실측: "오랑 삼"→"뒤에 파랑 3", "팔이"→"파리"처럼 숫자를 한국어 발음으로 잘못 받아썼다
+  const nums = [...new Set(page.match(/\d+(?:\.\d+)?/g) ?? [])].slice(0, 12)
+  const numHint = nums.length ? ` 자료의 숫자 ${nums.join(', ')}을(를) 말로 읽으면 일·이·삼·사·오·육·칠·팔·구로 들린다. 숫자로 적는다.` : ''
+  return { prompt: page ? `${PROMPT_BASE}${numHint} 강의 자료: ${page.slice(0, 400)}` : PROMPT_BASE, keywords }
 }
 
 export function floatToPcm16(f: Float32Array): Int16Array {

@@ -5,11 +5,12 @@ import { Engine } from './engine'
 import { parseProgress } from './ai/parse'
 import { groundSpeech, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
+import { parseScene } from './scene'
 import type { InkEvent } from '../shared/ink'
 
 interface RecordedCase {
   events: InkEvent[]
-  inputs: { n: number; at: number; type: string; event?: InkEvent; text?: string }[]
+  inputs: { n: number; at: number; type: string; event?: InkEvent; text?: string; raw?: string }[]
   failures: { n: number; request?: { kind: string; desc: string; raw: string } }[]
 }
 const fixture = (name: string): RecordedCase => JSON.parse(readFileSync(new URL(`../../cases/${name}.json`, import.meta.url), 'utf8'))
@@ -73,3 +74,55 @@ describe('최신 실측 회귀', () => {
   })
 })
 
+
+/** 실측 기록에서 n번 이벤트 직전까지의 필기와 반영된 장면 해석으로 만든 칠판 */
+const boardAt = (c: RecordedCase, n: number) => {
+  const b = new Board()
+  for (const e of c.inputs.filter((x) => x.n < n)) {
+    if (e.type === 'ink') b.apply(e.event!)
+    else if (e.type === 'scene') b.applyScene(parseScene(e.raw!)!)
+  }
+  return b
+}
+const opsOf = (raw: string) => parseProgress(raw + '\n').steps[0].ops.map(sanitizeOp) as Op[]
+
+describe('04시 실측 회귀', () => {
+  it('04:04 포물선 평행이동: 포물선을 자기 곡선을 따라 옮기는 응답은 실행하지 않는다', () => {
+    const c = fixture('real-parabola-040451')
+    const f = c.failures.find((x) => x.n === 466)!
+    const e = new Engine(boardAt(c, f.n), () => {})
+    expect(e.validateStep(opsOf(f.request!.raw))).toMatch(/자기 자신을 따라 이동/)
+  })
+
+  it('04:04 포물선 평행이동: by로 밀면 x만 바뀌고 y는 그대로다', () => {
+    const c = fixture('real-parabola-040451')
+    const b = boardAt(c, 466)
+    const e = new Engine(b, () => {})
+    const before = e.settled('o4')!
+    const ops: Op[] = [sanitizeOp({ v: 'move', id: 'o4', by: [80, 0], dur: 600 })!]
+    expect(e.validateStep(ops)).toBeNull()
+    e.beginStep()
+    ops.forEach((op) => e.applyOp(op, 0))
+    const after = e.settled('o4')!
+    expect(after.x - before.x).toBeCloseTo(80)
+    expect(after.y).toBeCloseTo(before.y)
+  })
+
+  it('04:04 정렬: 배열 위에 따로 쓴 8과 1을 바꾸는 응답은 다른 줄 교환으로 막는다', () => {
+    const c = fixture('real-parabola-040451')
+    const f = c.failures.find((x) => x.n === 2017)!
+    const b = boardAt(c, f.n)
+    for (const [id, read] of Object.entries({ o6: '5', o7: '3', o8: '8', o9: '1', o16: '8' })) b.get(id)!.read = read
+    const g = groundSpeech(b, '일 보다 크니까 뒤로 가겠죠', ['o9', 'o16'], 'swap', 'final')
+    expect(rejectUngrounded(opsOf(f.request!.raw), { ...g, targets: ['o9', 'o16'] }, b)).toBe('다른 줄의 값과 교환')
+  })
+
+  it('04:25 장면 해석이 서로 다른 값 5와 3을 합치라고 해도 따로 둔다', () => {
+    const c = fixture('real-sort-042514')
+    const b = boardAt(c, 229)
+    // logs/20261101-042514-zxxz.jsonl n=229 장면 해석 응답 원문
+    const raw = '{"objs":{"o1":{"role":"frame"},"o2":{"role":"frame"},"o3":{"role":"frame"},"o4":{"role":"frame"},"o5":{"role":"frame"},"o6":{"role":"frame"},"o7":{"role":"noise"},"o8":{"role":"value","read":"5"},"o9":{"role":"value","read":"3"},"o10":{"role":"value","read":"8"},"o11":{"role":"value","read":"1"},"o12":{"role":"noise"},"o13":{"role":"underline","to":"o8"},"o14":{"role":"underline","to":"o9"}},"merge":[["o8","o9"]],"split":{}}'
+    b.applyScene(parseScene(raw)!)
+    expect(b.values().map((o) => o.read)).toEqual(['5', '3', '8', '1'])
+  })
+})

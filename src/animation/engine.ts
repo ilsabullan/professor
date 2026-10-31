@@ -165,8 +165,13 @@ export class Engine {
       if (op.v !== 'move') continue
       if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
       moved.add(op.id)
+      // 수식 단위(2만큼)를 픽셀로 착각한 이동은 화면에서 보이지 않는다 (실측 재현에서 by:[2,0])
+      if (op.by && Math.hypot(op.by[0], op.by[1]) < 10) return `이동량이 너무 작음: ${op.id}`
+      // 자기 선을 따라 자기를 옮기는 것은 의미가 없다 (실측: 포물선 평행이동을 이렇게 써서 엉뚱하게 움직임)
+      if (op.along === op.id) return `자기 자신을 따라 이동: ${op.id}`
       const path = op.along ? this.linePts(op.along) : null
-      const to = op.along ? path?.at(-1) : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
+      const at = positions.get(op.id)!
+      const to = op.along ? path?.at(-1) : op.by ? { x: at.x + op.by[0], y: at.y + op.by[1] } : typeof op.to === 'string' ? positions.get(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
       if (!to || to.x < 0 || to.y < 0 || to.x > this.board.page.width || to.y > this.board.page.height) return '유효한 도착지가 없음'
       goals.set(op.id, to)
     }
@@ -314,7 +319,8 @@ export class Engine {
           }
           return op.dur
         }
-        const to = typeof op.to === 'string' ? this.startPos(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
+        const to = op.by ? { x: from.x + op.by[0], y: from.y + op.by[1] }
+          : typeof op.to === 'string' ? this.startPos(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
         if (!to) return 0
         if (sp) {
           sp.gx = to.x

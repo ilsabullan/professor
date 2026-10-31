@@ -18,7 +18,7 @@ export type Op =
       /** 이 시간(ms)이 지나면 흐려지며 사라짐 (즉시 반응 효과용) */
       life?: number
     }
-  | { v: 'move'; id: string; to?: [number, number] | string; along?: string; dur: number }
+  | { v: 'move'; id: string; to?: [number, number] | string; along?: string; by?: [number, number]; dur: number }
   | { v: 'color'; id: string; color: string }
   | { v: 'scale'; id: string; k: number; dur: number }
   | { v: 'pulse'; id: string }
@@ -93,8 +93,9 @@ export function sanitizeOp(raw: unknown): Op | null {
       if (!id) return null
       const to = xy(o.to) ?? str(o.to) ?? undefined
       const along = str(o.along) ?? undefined
-      if (!to && !along) return null
-      return { v: 'move', id, to, along, dur: dur(o.dur) }
+      const by = xy(o.by) ?? undefined
+      if (!to && !along && !by) return null
+      return { v: 'move', id, to, along, by, dur: dur(o.dur) }
     }
     case 'color': {
       const id = str(o.id)

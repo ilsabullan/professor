@@ -14,7 +14,7 @@ export interface Grounding {
 }
 
 const numberWords: Record<string, string> = { 영: '0', 일: '1', 이: '2', 삼: '3', 사: '4', 오: '5', 육: '6', 칠: '7', 팔: '8', 구: '9' }
-const MOVE = /바[뀌뀔꾸꿀꿔]|교환|옮[기겨]|(?:앞|뒤)로.{0,8}(가|보내)|넣|꺼내|밀[려리어]|push|pop|enqueue|dequeue/i
+const MOVE = /바[뀌뀔꾸꿀꿔]|교환|옮[기겨]|이동[하해한할시]|(?:앞|뒤)로.{0,8}(가|보내)|넣|꺼내|밀[려리어]|push|pop|enqueue|dequeue/i
 
 /** 독립된 수/조사 붙은 수만 읽는다. '과일', '사회', '오른쪽' 안의 글자는 숫자가 아니다. */
 export function mentionedValues(text: string): string[] {
@@ -100,6 +100,13 @@ export function rejectUngrounded(ops: Op[], g: Grounding, board: Board): string 
     if (moves.some((op) => board.underlineOf(op.id) || (typeof op.to === 'string' && board.underlineOf(op.to)))) return '밑줄은 이동할 값이 아님'
     const numeric = board.values().filter((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))
     const movedNumbers = moves.filter((op) => numeric.some((o) => o.id === op.id))
+    // 숫자끼리 자리를 바꿀 때 다른 줄로 보내지 않는다 (실측: 배열 위에 따로 쓴 "8"과 1을 바꿔 1이 튐)
+    const cy = (o: { bbox: { y: number; h: number } }) => o.bbox.y + o.bbox.h / 2
+    for (const op of movedNumbers) {
+      const a = numeric.find((o) => o.id === op.id)!
+      const b = typeof op.to === 'string' ? numeric.find((o) => o.id === op.to) : undefined
+      if (b && Math.abs(cy(a) - cy(b)) > Math.max(a.bbox.h, b.bbox.h) * 0.6) return '다른 줄의 값과 교환'
+    }
     if (movedNumbers.length && !g.sort) {
       if (!g.targets.length) return '이동할 값이 특정되지 않음'
       if (movedNumbers.some((op) => !g.targets.includes(op.id) || (typeof op.to === 'string' && numeric.some((o) => o.id === op.to) && !g.targets.includes(op.to)))) {

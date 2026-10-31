@@ -60,6 +60,17 @@ const DELAY: Record<string, number> = {
   접속어: 0,
 }
 
+/** 같은 쌍을 다시 바꾸면 되풀이로 보는 시간. 실측에서 받아쓰기가 한 문장을 쪼개 "바꿔요"가 두 번 들어왔다 */
+const SWAP_REPEAT_MS = 10000
+
+/** 두 객체의 맞교환이면 그 쌍의 키 */
+export function swapKey(ops: Op[]): string | null {
+  const moves = ops.filter((op): op is Extract<Op, { v: 'move' }> => op.v === 'move')
+  if (moves.length !== 2) return null
+  const [a, b] = moves
+  return a.to === b.id && b.to === a.id ? [a.id, b.id].sort().join('|') : null
+}
+
 /** 여러 입력을 묶을 때 계기 이름은 더 강한 신호로 */
 export const shortModel = (m: ModelId) => (m === 'claude-haiku-5-5' ? 'Haiku 5.5' : 'Sonnet 5.5')
 
@@ -102,6 +113,8 @@ export class Pipeline {
   private actionSeq = 0
   private epoch = 0
   private focus: { ids: string[]; t: number } = { ids: [], t: 0 }
+  /** 마지막으로 실행한 두 값 교환. 같은 말을 되풀이해 원래대로 되돌리는 것을 막는다 */
+  private lastSwap: { key: string; t: number } | null = null
   private lastEarlyLen = 0
   private interimDirty = false
   private lastCallAt = 0
@@ -576,7 +589,9 @@ export class Pipeline {
         if (!ps.valid || ops.some((op) => !op)) { reject('완성된 유효한 동작 묶음이 아님'); return }
         const validOps = ops as Op[]
         if (!validOps.length) return
-        const reason = grounding ? rejectUngrounded(validOps, grounding, this.board) : null
+        const swap = swapKey(validOps)
+        const reason = (swap && this.lastSwap?.key === swap && performance.now() - this.lastSwap.t < SWAP_REPEAT_MS ? '방금 바꾼 두 값을 다시 바꿈(되풀이한 말)' : null)
+          ?? (grounding ? rejectUngrounded(validOps, grounding, this.board) : null)
         if (reason) { reject(reason); return }
         const mutations = validOps.filter((op) => op.v === 'move').map((op) => [op.id, op.to, op.along]).sort()
         const st: PlayStep = {
@@ -585,7 +600,11 @@ export class Pipeline {
           validate: () => signal?.aborted || epoch !== this.epoch ? '취소되거나 이전 페이지의 요청'
             : this.engine.layoutKey() !== expectedLayout ? '요청 이후 칠판 배치가 바뀜'
             : grounding ? rejectUngrounded(validOps, grounding, this.board) : null,
-          onApplied: () => { expectedLayout = this.engine.layoutKey(); this.log('state', { reqId: rec.id, ...this.stateForLog() }) },
+          onApplied: () => {
+            expectedLayout = this.engine.layoutKey()
+            // 다른 이동이 끼면 되풀이가 아니라 새 교환이므로 기록을 바꾼다
+            if (validOps.some((op) => op.v === 'move')) this.lastSwap = swap ? { key: swap, t: performance.now() } : null
+            this.log('state', { reqId: rec.id, ...this.stateForLog() }) },
         }
         made++
         if (!rec.cap) rec.cap = ps.cap
@@ -637,6 +656,7 @@ export class Pipeline {
 
   resetAnimation() {
     this.epoch++
+    this.lastSwap = null
     clearTimeout(this.timer)
     this.pending = null
     this.interimDirty = false

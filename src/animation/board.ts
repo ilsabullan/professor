@@ -291,6 +291,9 @@ export class Board {
       if (group.some((id) => id in r.split)) continue
       const objs = group.map((id) => this.get(id))
       if (objs.length < 2 || objs.some((o) => !o || o.kind === 'text' || keep(o.id))) continue
+      // 서로 다른 값으로 읽힌 손글씨는 묶지 않는다 (실측: 밑줄을 긋자 "5"와 "3"을 한 객체로 합침)
+      const reads = new Set(objs.map((o) => o!.read ?? r.objs[o!.id]?.read).filter(Boolean))
+      if (reads.size >= 2) continue
       const [head, ...rest] = objs as BoardObj[]
       head.strokes = [...head.strokes, ...rest.flatMap((o) => o.strokes)]
       head.bbox = bboxOf(head.strokes.flatMap((st) => st.pts))

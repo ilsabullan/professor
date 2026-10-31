@@ -37,12 +37,12 @@ describe('오디오 변환', () => {
 })
 
 describe('Vad', () => {
-  it('말한 뒤 700ms 조용하면 한 발화를 닫는다', () => {
+  it('말한 뒤 900ms 조용하면 한 발화를 닫는다', () => {
     const v = new Vad()
     const marks: string[] = []
     let t = 0
     for (let i = 0; i < 5; i++) marks.push(v.push(3000, (t += 100)))
-    for (let i = 0; i < 7; i++) marks.push(v.push(100, (t += 100)))
+    for (let i = 0; i < 9; i++) marks.push(v.push(100, (t += 100)))
     expect(marks.filter((m) => m === 'end')).toHaveLength(1)
     expect(marks.at(-1)).toBe('end')
     expect(v.lastVoiceAt).toBe(500)

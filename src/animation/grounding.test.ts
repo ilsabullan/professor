@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { Board } from './board'
 import { Engine } from './engine'
 import { groundSpeech, mentionedValues, planNumericSort } from './grounding'
@@ -29,3 +29,15 @@ it('전체 정렬은 현재 자리의 순열로 계산하고 다시 실행해도
   expect(actual).toEqual(['1', '3', '5', '8'])
   expect(planNumericSort(b, e, '정렬 완료')!.ops.every((op) => op.v === 'pulse')).toBe(true)
 })
+
+describe('이동 표현 (04시 실측)', () => {
+  it('"포물선이 오른쪽으로 이동하겠죠"를 이동 지시로 본다', () => {
+    const b = new Board()
+    expect(groundSpeech(b, '오른쪽으로 포물선이 오른쪽으로 이동하겠죠? 포물선이', [], 'g', 'final').move).toBe(true)
+  })
+  it('"평행이동이에요"처럼 이름만 말한 것은 이동 지시가 아니다', () => {
+    const b = new Board()
+    expect(groundSpeech(b, '앞에 평행이동이에요', [], 'g', 'final').move).toBe(false)
+  })
+})
+

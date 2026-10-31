@@ -109,3 +109,19 @@ describe('실측의 입력 중첩과 잘못된 대상', () => {
     expect(p.busy()).toBe(false)
   })
 })
+
+describe('04시 실측: 쪼개진 받아쓰기', () => {
+  it('"서로 바꿔요"가 두 조각에 연달아 들어와도 3과 1을 한 번만 바꾼다 (logs 042636)', async () => {
+    const { p } = setup()
+    const x2 = p.engine.settled('o2')!.x, x4 = p.engine.settled('o4')!.x
+    await say(p, '서로 바꿔요 3이 1보다')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(p.engine.settled('o2')!.x).toBe(x4)
+    await say(p, '딱히니까 서로 바꿔요')
+    requests.at(-1)?.text(swap('o2', 'o4') + '\n')
+    requests.at(-1)?.finish()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(p.engine.settled('o2')!.x).toBe(x4)
+    expect(p.engine.settled('o4')!.x).toBe(x2)
+  })
+})
