@@ -8,7 +8,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_REPOSITORY: ghcr.io/ilsabullan/professor
+  IMAGE_REPOSITORY: ghcr.io/hurdoo/ilsabullan-professor
 
 jobs:
   bootstrap:
@@ -53,5 +53,5 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_REPOSITORY }}:bootstrap-${{ github.sha }}
           labels: |
-            org.opencontainers.image.source=https://github.com/ilsabullan/professor
+            org.opencontainers.image.source=https://github.com/HURDOO/professor
             org.opencontainers.image.revision=${{ github.sha }}

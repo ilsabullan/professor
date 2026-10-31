@@ -30,7 +30,7 @@ npm run dev            # https://localhost:5173
 
 ## 배포
 
-라즈베리파이 deployd로 배포한다 (`deploy.json`, `Dockerfile`). 주소는 https://ilsabullan-professor.app.hurdoo.kr/?k=<접속 코드>.
+라즈베리파이 deployd로 배포한다 (`deploy.json`, `Dockerfile`). deployd는 `ghcr.io/hurdoo/` 이미지만 받으므로 이미지는 포크 `HURDOO/professor`에 연결된 `ghcr.io/hurdoo/ilsabullan-professor`에 올린다. 주소는 https://ilsabullan-professor.app.hurdoo.kr/?k=<접속 코드>.
 
 - 운영 서버는 `server/prod.ts` (`npm start`). 의존성 없이 `dist/`를 내주고 `/healthz`, `/api/status`, `/api/anthropic/*`, `/api/stt/<업체>`를 처리한다.
 - 공개 주소라서 `/api/*`는 `?k=<접속 코드>`로 한 번 연 기기만 쓸 수 있다.
