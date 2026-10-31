@@ -4,6 +4,8 @@ import type { Lecture, Page } from "../types";
 import { deleteLecture, listLectures, putLecture, putPdf } from "../lib/db";
 import { forgetLecturePdf, openPdf, renderPdfPage } from "../lib/pdf";
 import { uid } from "../lib/id";
+import { Menu } from "../components/Menu";
+import { ConfirmDialog, PromptDialog } from "../components/Dialog";
 
 async function createLecture(file: File, order: number): Promise<Lecture> {
   const data = await file.arrayBuffer();
@@ -48,6 +50,7 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
   const [lectures, setLectures] = useState<Lecture[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<{ kind: "rename" | "delete"; lecture: Lecture } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const reload = () => listLectures().then(setLectures);
@@ -71,17 +74,15 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
     }
   };
 
-  const rename = async (lecture: Lecture) => {
-    setMenuFor(null);
-    const title = prompt("차시 이름", lecture.title)?.trim();
-    if (!title || title === lecture.title) return;
+  const rename = async (lecture: Lecture, title: string) => {
+    setDialog(null);
+    if (title === lecture.title) return;
     await putLecture({ ...lecture, title });
     await reload();
   };
 
   const remove = async (lecture: Lecture) => {
-    setMenuFor(null);
-    if (!confirm(`"${lecture.title}"을(를) 삭제할까요? 필기도 함께 지워져요.`)) return;
+    setDialog(null);
     forgetLecturePdf(lecture.id);
     await deleteLecture(lecture.id);
     await reload();
@@ -97,8 +98,8 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
       </header>
       <div className="library-grid">
         <div className="doc">
-          <button className="doc-cover doc-cover-new" disabled={uploading} onClick={() => fileRef.current?.click()}>
-            <span className="doc-new-tile">
+          <button className="doc-cover" disabled={uploading} onClick={() => fileRef.current?.click()}>
+            <span className="doc-tile doc-tile-new">
               <Plus size={36} strokeWidth={1.5} />
             </span>
           </button>
@@ -111,25 +112,21 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
         {lectures?.map((l) => (
           <div key={l.id} className="doc">
             <button className="doc-cover" onClick={() => onOpen(l.id)}>
-              {l.thumbnail && <img src={l.thumbnail} alt="" />}
+              <span className="doc-tile">{l.thumbnail && <img src={l.thumbnail} alt="" />}</span>
             </button>
             <div className="doc-title-row">
-              <button className="doc-title" onClick={() => onOpen(l.id)}>
-                {l.title}
-              </button>
-              <button className="doc-menu-btn" aria-label="더보기" onClick={() => setMenuFor(l.id)}>
+              <button className="doc-title-btn" aria-haspopup="menu" onClick={() => setMenuFor(l.id)}>
+                <span className="doc-title">{l.title}</span>
                 <ChevronDown size={16} strokeWidth={2} />
               </button>
               {menuFor === l.id && (
-                <>
-                  <div className="menu-backdrop" onClick={() => setMenuFor(null)} />
-                  <div className="menu">
-                    <button onClick={() => rename(l)}>이름 바꾸기</button>
-                    <button className="danger" onClick={() => remove(l)}>
-                      삭제
-                    </button>
-                  </div>
-                </>
+                <Menu
+                  onClose={() => setMenuFor(null)}
+                  items={[
+                    { label: "이름 바꾸기", onSelect: () => setDialog({ kind: "rename", lecture: l }) },
+                    { label: "삭제", danger: true, onSelect: () => setDialog({ kind: "delete", lecture: l }) },
+                  ]}
+                />
               )}
             </div>
             <div className="doc-meta">{formatDate(l.updatedAt)}</div>
@@ -137,6 +134,25 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
           </div>
         ))}
       </div>
+      {dialog?.kind === "rename" && (
+        <PromptDialog
+          title="차시 이름 바꾸기"
+          initial={dialog.lecture.title}
+          confirmLabel="저장"
+          onSubmit={(title) => rename(dialog.lecture, title)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "delete" && (
+        <ConfirmDialog
+          title={`"${dialog.lecture.title}"을(를) 삭제할까요?`}
+          message="PDF와 필기가 함께 지워지고 되돌릴 수 없어요."
+          confirmLabel="삭제"
+          danger
+          onConfirm={() => remove(dialog.lecture)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
       <input
         ref={fileRef}
         type="file"

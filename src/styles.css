@@ -16,6 +16,7 @@
   --mist: #e8e3fd;
   --logo-gradient: linear-gradient(135deg, #d9c8fb 0%, #b3a4f6 45%, #8f9cf6 100%);
   --glow: 0 6px 18px rgba(124, 112, 245, 0.28);
+  --press: rgba(120, 120, 128, 0.2); /* 누르는 동안 표시 */
   font-family: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", system-ui,
     sans-serif;
   color: var(--text);
@@ -43,11 +44,47 @@ button {
   background: none;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button:disabled {
   cursor: default;
   opacity: 0.3;
+}
+
+/* 마우스가 있는 기기에서만 hover를 쓴다. 터치 기기에서는 hover가 남아 선택 색을 덮어서 늦게 바뀌는 것처럼 보인다 */
+@media (hover: hover) {
+  .icon-btn:not(:disabled):not(.active):hover,
+  .menu button:not(:disabled):hover,
+  .doc-title-btn:hover {
+    background: var(--fill);
+  }
+
+  .doc-cover:not(:disabled):hover .doc-tile {
+    transform: translateY(-2px);
+  }
+}
+
+/* 누르는 동안 회색빛 (모든 버튼 공통) */
+.icon-btn:not(:disabled):not(.active):active,
+.text-btn:active,
+.doc-title-btn:active,
+.menu button:not(:disabled):active,
+.dialog-actions button:not(:disabled):active,
+.swatch:not(:disabled):active,
+.size:not(:disabled):active {
+  background-color: var(--press);
+}
+
+.icon-btn.active:active,
+.doc-cover:not(:disabled):active .doc-tile,
+.overview-item:active .thumb-canvas {
+  filter: brightness(0.88);
+}
+
+.doc-cover:not(:disabled):active .doc-tile,
+.overview-item:active .thumb-canvas {
+  transform: scale(0.97);
 }
 
 .icon-btn {
@@ -58,10 +95,6 @@ button:disabled {
   height: 40px;
   border-radius: 10px;
   color: var(--accent);
-}
-
-.icon-btn:not(:disabled):hover {
-  background: var(--fill);
 }
 
 .icon-btn.active {
@@ -78,6 +111,7 @@ button:disabled {
   gap: 4px;
   height: 40px;
   padding: 0 8px;
+  border-radius: 8px;
   color: var(--accent);
   font-size: 17px;
 }
@@ -150,61 +184,68 @@ button:disabled {
   justify-content: center;
 }
 
-.doc-cover img {
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 8px;
-  box-shadow:
-    0 1px 2px rgba(60, 50, 140, 0.12),
-    0 10px 24px rgba(124, 112, 245, 0.18);
-}
-
-.doc-new-tile {
+/* 새로 만들기와 차시 표지를 같은 크기의 타일로 맞춘다 */
+.doc-tile {
   width: 72%;
   aspect-ratio: 3 / 4;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   border-radius: 18px;
+  background: var(--surface);
+  box-shadow:
+    0 1px 2px rgba(60, 50, 140, 0.12),
+    0 14px 28px rgba(124, 112, 245, 0.18);
+  transition:
+    transform 0.12s ease,
+    filter 0.12s ease;
+}
+
+.doc-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.doc-tile-new {
   background: var(--logo-gradient);
   color: #fff;
   box-shadow:
     inset 0 2px 0 rgba(255, 255, 255, 0.6),
     inset 0 -6px 14px rgba(110, 98, 236, 0.25),
     0 14px 28px rgba(124, 112, 245, 0.25);
-  transition: transform 0.15s ease;
-}
-
-.doc-cover-new:not(:disabled):hover .doc-new-tile {
-  transform: translateY(-2px);
 }
 
 .doc-title-row {
   position: relative;
   display: flex;
+  justify-content: center;
+  max-width: 100%;
+  margin-top: 8px;
+}
+
+.doc-title-row > .doc-title {
+  padding: 4px 0;
+}
+
+.doc-title-btn {
+  display: inline-flex;
   align-items: center;
   gap: 2px;
   max-width: 100%;
-  margin-top: 12px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: var(--secondary);
 }
 
 .doc-title {
   font-size: 15px;
   font-weight: 600;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.doc-menu-btn {
-  display: inline-flex;
-  padding: 2px;
-  border-radius: 50%;
-  color: var(--secondary);
-}
-
-.doc-menu-btn:hover {
-  background: var(--fill);
 }
 
 .doc-meta {
@@ -219,13 +260,17 @@ button:disabled {
   z-index: 20;
 }
 
+.menu-anchor {
+  position: relative;
+}
+
 .menu {
   position: absolute;
   top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 21;
-  min-width: 180px;
+  min-width: 200px;
   padding: 4px 0;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.96);
@@ -236,23 +281,111 @@ button:disabled {
     0 10px 30px rgba(0, 0, 0, 0.18);
 }
 
+.menu-right {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
 .menu button {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   width: 100%;
   padding: 11px 16px;
   text-align: left;
   font-size: 16px;
+  white-space: nowrap;
 }
 
 .menu button + button {
   border-top: 0.5px solid var(--separator);
 }
 
-.menu button:hover {
-  background: var(--fill);
+.menu .danger {
+  color: var(--danger);
 }
 
-.menu .danger {
+/* ---------- 확인·입력 창 ---------- */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(42, 37, 80, 0.18);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: overview-fade 0.15s ease-out;
+}
+
+.dialog {
+  width: min(300px, 100%);
+  overflow: hidden;
+  border-radius: 16px;
+  background: rgba(251, 250, 255, 0.97);
+  box-shadow: 0 20px 50px rgba(70, 55, 160, 0.28);
+  animation: overview-pop 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.dialog-body {
+  padding: 20px 16px 16px;
+  text-align: center;
+}
+
+.dialog-body h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.dialog-body p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
+
+.dialog-input {
+  width: 100%;
+  margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 16px; /* 16px보다 작으면 아이패드가 화면을 확대한다 */
+  color: var(--text);
+  outline: none;
+}
+
+.dialog-input:focus {
+  border-color: var(--accent);
+}
+
+.dialog-actions {
+  display: flex;
+  border-top: 0.5px solid var(--separator);
+}
+
+.dialog-actions button {
+  flex: 1;
+  height: 44px;
+  font-size: 17px;
+  color: var(--accent);
+}
+
+.dialog-actions button + button {
+  border-left: 0.5px solid var(--separator);
+}
+
+.dialog-actions .strong {
+  font-weight: 700;
+}
+
+.dialog-actions .danger {
   color: var(--danger);
 }
 
@@ -344,6 +477,11 @@ button:disabled {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+.tool-bar .swatch:disabled,
+.tool-bar .size:disabled {
+  opacity: 0.35;
+}
+
 .size {
   display: inline-flex;
   align-items: center;
@@ -362,20 +500,65 @@ button:disabled {
   background: var(--accent-soft);
 }
 
-.stage {
+.stage-area {
+  position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
   display: flex;
 }
 
+.stage {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  /* 손가락 확대·이동·넘기기는 직접 처리한다 */
+  touch-action: none;
+}
+
 .page-wrap {
+  position: relative;
   margin: auto;
   flex-shrink: 0;
+  backface-visibility: hidden;
+}
+
+/* 넘기기용 앞뒤 페이지: 진짜 페이지와 똑같이 보여야 바꿔 끼울 때 티가 나지 않는다 */
+.page-peek {
+  position: absolute;
+  pointer-events: none;
+}
+
+.page-peek .thumb-canvas {
+  border-radius: 0;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+/* 굿노트처럼 왼쪽 위에 반투명하게 띄우는 쪽수 */
+.page-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 0 0 0.5px var(--separator);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .page-canvas {
   position: relative;
+  isolation: isolate;
   background: #fff;
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.08),
@@ -386,6 +569,11 @@ button:disabled {
   position: absolute;
   inset: 0;
   display: block;
+}
+
+/* 형광펜은 PDF 글씨와 곱해져서 글씨 밑에 칠한 것처럼 보인다 */
+.highlight-layer {
+  mix-blend-mode: multiply;
 }
 
 .input-layer {
@@ -407,51 +595,6 @@ button:disabled {
 .loading {
   margin: auto;
   color: var(--secondary);
-}
-
-.float-bar {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 16px;
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  pointer-events: none;
-}
-
-.pill {
-  display: flex;
-  align-items: center;
-  height: 36px;
-  padding: 0 4px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow:
-    0 0 0 0.5px var(--separator),
-    0 6px 18px rgba(124, 112, 245, 0.18);
-  pointer-events: auto;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.pill button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  border-radius: 16px;
-  color: var(--text);
-}
-
-.pill-text {
-  padding: 0 6px;
-  font-size: 13px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 모아보기 (필기 화면 위 팝업, 뒤는 블러) ---------- */
@@ -491,14 +634,12 @@ button:disabled {
   border-bottom: 1px solid var(--separator);
 }
 
+/* 열 개수·썸네일 너비·여백은 팝업 너비에 맞춰 Overview.tsx에서 정한다 */
 .overview-grid {
   flex: 1;
   overflow: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, 240px);
   justify-content: center;
-  gap: 26px 34px;
-  padding: 24px 40px;
   align-content: start;
 }
 
@@ -526,6 +667,9 @@ button:disabled {
   display: block;
   background: #fff;
   border-radius: 3px;
+  transition:
+    transform 0.12s ease,
+    filter 0.12s ease;
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.08),
     0 2px 8px rgba(0, 0, 0, 0.1);

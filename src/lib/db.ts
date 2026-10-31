@@ -81,6 +81,10 @@ export async function getAllStrokes(lectureId: string): Promise<Record<string, S
   return result;
 }
 
+export async function deleteStrokes(lectureId: string, pageId: string): Promise<void> {
+  await wrap((await store("strokes", "readwrite")).delete(strokeKey(lectureId, pageId)));
+}
+
 export async function putStrokes(lectureId: string, pageId: string, strokes: Stroke[]): Promise<void> {
   await wrap((await store("strokes", "readwrite")).put(strokes, strokeKey(lectureId, pageId)));
 }

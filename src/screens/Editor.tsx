@@ -1,27 +1,31 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import {
+  ArrowLeftToLine,
+  ArrowRightToLine,
   ChevronLeft,
+  Ellipsis,
   Eraser,
   Highlighter,
   LayoutGrid,
   PenLine,
-  Presentation,
   Redo2,
+  Trash,
   Undo2,
   WandSparkles,
-  X,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
-import type { Lecture, Stroke, Tool } from "../types";
-import { getAllStrokes, getLecture, putLecture, putStrokes } from "../lib/db";
+import type { Lecture, Page, Stroke, Tool } from "../types";
+import { deleteStrokes, getAllStrokes, getLecture, putLecture, putStrokes } from "../lib/db";
 import { loadLecturePdf, type PDFDocumentProxy } from "../lib/pdf";
 import { emitLaser, emitStroke } from "../lib/events";
 import { uid } from "../lib/id";
 import { PageCanvas } from "../components/PageCanvas";
+import { PageThumb } from "../components/PageThumb";
 import { Overview } from "../components/Overview";
 import { IconButton } from "../components/IconButton";
+import { Menu } from "../components/Menu";
+import { ConfirmDialog } from "../components/Dialog";
 
 const ICON = { size: 22, strokeWidth: 1.75 };
 const TOOLS: { id: Tool; label: string; icon: ReactNode }[] = [
@@ -34,15 +38,25 @@ const PEN_COLORS = ["#1f1f1f", "#1e5eff", "#e53935", "#2e9d4f"];
 const HIGHLIGHT_COLORS = ["#ffe14d", "#7ee08a", "#ff8fc7", "#7cc8ff"];
 const PEN_SIZES = [0.0015, 0.003, 0.006]; // 페이지 너비 대비
 const HIGHLIGHT_SIZES = [0.012, 0.02, 0.03];
-const ZOOM_MIN = 0.5;
+const ZOOM_MIN = 1; // 화면에 맞춘 크기보다 작게는 줄이지 않는다
 const ZOOM_MAX = 4;
 const SAVE_DELAY = 400;
-// 페이지 둘레 여백 (피그마 02 필기 화면 기준). 발표 모드에서는 화면을 꽉 채운다
+// 페이지 둘레 여백 (피그마 02 필기 화면 기준)
 const STAGE_PAD = { x: 76, y: 72 };
-const STAGE_PAD_FULLSCREEN = { x: 8, y: 8 };
+const SWIPE_DISTANCE = 0.18; // 화면 너비 대비 이만큼 밀면 넘긴다
+const SWIPE_SPEED = 0.5; // px/ms, 이보다 빠르게 튕기면 짧게 밀어도 넘긴다
+const SLIDE_MS = 240;
+const SLIDE_EASE = `transform ${SLIDE_MS}ms cubic-bezier(0.25, 0.8, 0.3, 1)`;
 const EMPTY: Stroke[] = [];
 
 type History = { undo: Stroke[][]; redo: Stroke[][] };
+type XY = { x: number; y: number };
+type TouchGesture =
+  | { kind: "drag"; mode: "undecided" | "pan" | "swipe"; start: XY; last: XY; lastTime: number; speed: number }
+  | { kind: "pinch"; d0: number; m0: XY; origin: XY; scale: number; m: XY }
+  | { kind: "idle" }; // 핀치 뒤 남은 손가락은 다 뗄 때까지 무시
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 export function Editor({
   lectureId,
@@ -57,18 +71,20 @@ export function Editor({
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageIndex, setPageIndex] = useState(initialPage);
   const [tool, setTool] = useState<Tool>("pen");
+  const [inkTool, setInkTool] = useState<"pen" | "highlighter">("pen"); // 지우개·레이저일 때 도구 모음에 보여 줄 색·굵기
   const [penColor, setPenColor] = useState(PEN_COLORS[0]);
   const [highlightColor, setHighlightColor] = useState(HIGHLIGHT_COLORS[0]);
   const [penSize, setPenSize] = useState(1);
   const [highlightSize, setHighlightSize] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [showOverview, setShowOverview] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [showPageMenu, setShowPageMenu] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
-  const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   // 필기는 이벤트 도중 여러 번 바뀔 수 있어서 ref를 기준으로 두고 바뀔 때마다 다시 그린다
   const strokes = useRef<Record<string, Stroke[]>>({});
   const histories = useRef(new Map<string, History>());
@@ -91,7 +107,7 @@ export function Editor({
       strokes.current = saved;
       setPdfDoc(doc);
       setLecture(l);
-      setPageIndex((i) => Math.min(Math.max(0, i), l.pages.length - 1));
+      setPageIndex((i) => clamp(i, 0, l.pages.length - 1));
     })();
     return () => {
       alive = false;
@@ -122,6 +138,11 @@ export function Editor({
       flushAll();
     };
   }, [savePage]);
+
+  const updateLecture = (next: Lecture) => {
+    setLecture(next);
+    putLecture(next);
+  };
 
   // ---- 필기 변경과 실행 취소 ----
   const historyOf = (pageId: string) => {
@@ -159,10 +180,11 @@ export function Editor({
     setPageStrokes(page.id, next, false);
   };
 
-  // ---- 페이지 이동, 확대 ----
+  // ---- 페이지 이동, 추가, 삭제 ----
   const goTo = (index: number) => {
     if (!lecture) return;
-    setPageIndex(Math.min(Math.max(0, index), lecture.pages.length - 1));
+    setPageIndex(clamp(index, 0, lecture.pages.length - 1));
+    setZoom(1);
     stageRef.current?.scrollTo(0, 0);
   };
 
@@ -170,8 +192,35 @@ export function Editor({
     window.history.replaceState(null, "", `#/l/${lectureId}/${pageIndex + 1}`);
   }, [lectureId, pageIndex]);
 
+  const insertBlankPage = (at: number) => {
+    if (!lecture || !page) return;
+    const blank: Page = { id: uid(), pdfPageIndex: null, width: page.width, height: page.height };
+    const pages = [...lecture.pages];
+    pages.splice(at, 0, blank);
+    updateLecture({ ...lecture, pages, updatedAt: Date.now() });
+    setPageIndex(at);
+    setZoom(1);
+  };
+
+  const deleteCurrentPage = () => {
+    setConfirmDelete(false);
+    if (!lecture || !page || lecture.pages.length <= 1) return;
+    clearTimeout(saveTimers.current.get(page.id));
+    saveTimers.current.delete(page.id);
+    const rest = { ...strokes.current };
+    delete rest[page.id];
+    strokes.current = rest;
+    histories.current.delete(page.id);
+    deleteStrokes(lectureId, page.id);
+    const pages = lecture.pages.filter((p) => p.id !== page.id);
+    updateLecture({ ...lecture, pages, updatedAt: Date.now() });
+    setPageIndex(Math.min(pageIndex, pages.length - 1));
+    setZoom(1);
+  };
+
+  // ---- 확대 ----
   const zoomTo = (target: number) => {
-    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(target * 100) / 100));
+    const next = clamp(Math.round(target * 100) / 100, ZOOM_MIN, ZOOM_MAX);
     const el = stageRef.current;
     if (el && next !== zoom) {
       // 화면 가운데를 기준으로 확대
@@ -186,44 +235,181 @@ export function Editor({
     setZoom(next);
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = stageRef.current!;
+    setBox({ w: el.clientWidth, h: el.clientHeight }); // 첫 화면부터 바로 맞춘 크기로 그린다
     const ro = new ResizeObserver(() => setBox({ w: el.clientWidth, h: el.clientHeight }));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // ---- 발표 모드 ----
-  useEffect(() => {
-    const onChange = () => setFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+  // ---- 손가락 제스처: 두 손가락으로 확대·축소, 한 손가락으로 넘기기(확대 중이면 이동) ----
+  const touches = useRef(new Map<number, XY>());
+  const touchGesture = useRef<TouchGesture | null>(null);
+  const penDown = useRef(false); // 펜으로 쓰는 동안 닿는 손바닥은 무시한다
+  const sliding = useRef(false);
+  const pinchFocus = useRef<{ origin: XY; scale: number; m: XY } | null>(null);
 
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else rootRef.current?.requestFullscreen?.();
+  const pendingTransform = useRef<{ transform: string; origin: string } | null>(null);
+  const transformFrame = useRef(0);
+
+  const setWrapTransform = (transform: string, transition = "none", origin = "") => {
+    cancelAnimationFrame(transformFrame.current);
+    transformFrame.current = 0;
+    pendingTransform.current = null;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    wrap.style.transition = transition;
+    wrap.style.transformOrigin = origin;
+    wrap.style.transform = transform;
   };
 
-  const addBlankPage = () => {
-    if (!lecture) return;
-    const last = lecture.pages[lecture.pages.length - 1];
-    const next: Lecture = {
-      ...lecture,
-      updatedAt: Date.now(),
-      pages: [...lecture.pages, { id: uid(), pdfPageIndex: null, width: last?.width ?? 1280, height: last?.height ?? 720 }],
-    };
-    setLecture(next);
-    putLecture(next);
+  // 손가락이 움직일 때마다 바로 바꾸지 않고 화면을 그리는 박자(프레임)에 한 번만 바꿔서 끊김을 줄인다
+  const queueWrapTransform = (transform: string, origin = "") => {
+    pendingTransform.current = { transform, origin };
+    if (transformFrame.current) return;
+    transformFrame.current = requestAnimationFrame(() => {
+      transformFrame.current = 0;
+      const next = pendingTransform.current;
+      if (next) setWrapTransform(next.transform, "none", next.origin);
+    });
   };
+
+  const startPinch = () => {
+    const [a, b] = [...touches.current.values()];
+    const m0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const r = wrapRef.current!.getBoundingClientRect();
+    setWrapTransform("");
+    touchGesture.current = { kind: "pinch", d0: Math.hypot(a.x - b.x, a.y - b.y), m0, origin: { x: m0.x - r.left, y: m0.y - r.top }, scale: 1, m: m0 };
+  };
+
+  const finishSwipe = (dx: number, speed: number) => {
+    const stage = stageRef.current;
+    const l = lectureRef.current;
+    if (!stage || !l) return;
+    const width = stage.clientWidth;
+    const dir = dx < 0 ? 1 : -1; // 왼쪽으로 밀면 다음 페이지
+    const target = pageIndex + dir;
+    const go = (Math.abs(dx) > width * SWIPE_DISTANCE || Math.abs(speed) > SWIPE_SPEED) && target >= 0 && target < l.pages.length;
+    sliding.current = true;
+    if (!go) {
+      setWrapTransform("translate3d(0, 0, 0)", SLIDE_EASE);
+      window.setTimeout(() => {
+        setWrapTransform("");
+        sliding.current = false;
+      }, SLIDE_MS);
+      return;
+    }
+    // 옆에 붙어 있던 페이지가 가운데로 들어올 때까지 함께 민 다음, 같은 순간에 진짜 페이지로 바꿔 끼운다
+    setWrapTransform(`translate3d(${-dir * width}px, 0, 0)`, SLIDE_EASE);
+    window.setTimeout(() => {
+      flushSync(() => {
+        setPageIndex(target);
+        setZoom(1);
+      });
+      setWrapTransform("");
+      sliding.current = false;
+    }, SLIDE_MS);
+  };
+
+  const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "pen") {
+      penDown.current = true;
+      return;
+    }
+    if (e.pointerType !== "touch" || penDown.current || sliding.current) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = { x: e.clientX, y: e.clientY };
+    touches.current.set(e.pointerId, p);
+    if (touches.current.size === 1) {
+      touchGesture.current = { kind: "drag", mode: "undecided", start: p, last: p, lastTime: e.timeStamp, speed: 0 };
+    } else if (touches.current.size === 2) {
+      if (touchGesture.current?.kind === "drag" && touchGesture.current.mode === "swipe") setWrapTransform("");
+      startPinch();
+    }
+  };
+
+  const onStagePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType !== "touch" || !touches.current.has(e.pointerId)) return;
+    const p = { x: e.clientX, y: e.clientY };
+    touches.current.set(e.pointerId, p);
+    const g = touchGesture.current;
+    if (!g || g.kind === "idle") return;
+
+    if (g.kind === "pinch") {
+      const [a, b] = [...touches.current.values()];
+      const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      g.scale = clamp((zoom * Math.hypot(a.x - b.x, a.y - b.y)) / g.d0, ZOOM_MIN, ZOOM_MAX) / zoom;
+      g.m = m;
+      queueWrapTransform(`translate3d(${m.x - g.m0.x}px, ${m.y - g.m0.y}px, 0) scale(${g.scale})`, `${g.origin.x}px ${g.origin.y}px`);
+      return;
+    }
+
+    const dx = p.x - g.last.x;
+    const dy = p.y - g.last.y;
+    const dt = Math.max(1, e.timeStamp - g.lastTime);
+    g.speed = dx / dt;
+    g.last = p;
+    g.lastTime = e.timeStamp;
+    if (g.mode === "undecided") {
+      const tx = p.x - g.start.x;
+      const ty = p.y - g.start.y;
+      if (Math.hypot(tx, ty) < 8) return;
+      g.mode = zoom <= ZOOM_MIN && Math.abs(tx) > Math.abs(ty) ? "swipe" : "pan";
+    }
+    if (g.mode === "pan") {
+      stageRef.current?.scrollBy(-dx, -dy);
+    } else {
+      let tx = p.x - g.start.x;
+      const atEdge = (tx > 0 && pageIndex === 0) || (tx < 0 && pageIndex >= (lectureRef.current?.pages.length ?? 1) - 1);
+      if (atEdge) tx *= 0.3; // 첫·마지막 페이지에서는 살짝만 끌려오고 돌아간다
+      queueWrapTransform(`translate3d(${tx}px, 0, 0)`);
+    }
+  };
+
+  const onStagePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "pen") {
+      penDown.current = false;
+      return;
+    }
+    if (e.pointerType !== "touch" || !touches.current.has(e.pointerId)) return;
+    touches.current.delete(e.pointerId);
+    const g = touchGesture.current;
+    if (g?.kind === "pinch" && touches.current.size < 2) {
+      // 확대 배율을 확정하고, 손가락 사이에 있던 지점이 그 자리에 남도록 스크롤을 맞춘다
+      const next = clamp(zoom * g.scale, ZOOM_MIN, ZOOM_MAX);
+      const snapped = next < 1.05 ? 1 : Math.round(next * 100) / 100;
+      pinchFocus.current = { origin: g.origin, scale: snapped / zoom, m: g.m };
+      setWrapTransform("");
+      setZoom(snapped);
+      touchGesture.current = { kind: "idle" };
+    } else if (g?.kind === "drag" && g.mode === "swipe") {
+      finishSwipe(g.last.x - g.start.x, g.speed);
+    }
+    if (touches.current.size === 0) touchGesture.current = null;
+  };
+
+  useLayoutEffect(() => {
+    const focus = pinchFocus.current;
+    const wrap = wrapRef.current;
+    const stage = stageRef.current;
+    if (!focus || !wrap || !stage) return;
+    pinchFocus.current = null;
+    const r = wrap.getBoundingClientRect();
+    stage.scrollBy(r.left + focus.origin.x * focus.scale - focus.m.x, r.top + focus.origin.y * focus.scale - focus.m.y);
+  }, [zoom]);
 
   // ---- 키보드, 휠 (최신 상태를 쓰도록 ref로 연결) ----
   const keyHandler = useRef<(e: KeyboardEvent) => void>(() => {});
   keyHandler.current = (e) => {
-    if (showOverview) {
-      if (e.key === "Escape") setShowOverview(false);
+    if (showOverview || confirmDelete) {
+      if (e.key === "Escape") {
+        setShowOverview(false);
+        setConfirmDelete(false);
+      }
       return;
     }
+    if ((e.target as HTMLElement).tagName === "INPUT") return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
@@ -254,19 +440,39 @@ export function Editor({
     };
   }, []);
 
-  const pad = fullscreen ? STAGE_PAD_FULLSCREEN : STAGE_PAD;
-  const fitWidth = page
-    ? Math.max(100, Math.min(box.w - pad.x * 2, ((box.h - pad.y * 2) * page.width) / page.height))
-    : 0;
+  // ---- 도구 ----
+  const selectTool = (t: Tool) => {
+    setTool(t);
+    if (t === "pen" || t === "highlighter") setInkTool(t);
+  };
   const isInk = tool === "pen" || tool === "highlighter";
-  const colors = tool === "highlighter" ? HIGHLIGHT_COLORS : PEN_COLORS;
-  const color = tool === "highlighter" ? highlightColor : penColor;
-  const sizes = tool === "highlighter" ? HIGHLIGHT_SIZES : PEN_SIZES;
-  const sizeIndex = tool === "highlighter" ? highlightSize : penSize;
+  const colors = inkTool === "highlighter" ? HIGHLIGHT_COLORS : PEN_COLORS;
+  const color = inkTool === "highlighter" ? highlightColor : penColor;
+  const sizes = inkTool === "highlighter" ? HIGHLIGHT_SIZES : PEN_SIZES;
+  const sizeIndex = inkTool === "highlighter" ? highlightSize : penSize;
+  const pickColor = (c: string) => (inkTool === "highlighter" ? setHighlightColor(c) : setPenColor(c));
+  const pickSize = (i: number) => (inkTool === "highlighter" ? setHighlightSize(i) : setPenSize(i));
+
+  const fitWidthOf = (p: Page) =>
+    Math.max(100, Math.min(box.w - STAGE_PAD.x * 2, ((box.h - STAGE_PAD.y * 2) * p.width) / p.height));
+  const fitWidth = page ? fitWidthOf(page) : 0;
   const history = page ? historyOf(page.id) : null;
 
+  // 넘기기용으로 지금 페이지 양옆(화면 한 폭 거리)에 붙여 두는 앞뒤 페이지. 화면에 맞춘 크기일 때만 둔다
+  const peeks =
+    lecture && page && zoom === 1 && box.w > 0
+      ? ([-1, 1] as const).flatMap((side) => {
+          const p = lecture.pages[pageIndex + side];
+          if (!p) return [];
+          const w = fitWidthOf(p);
+          const h = (w * p.height) / p.width;
+          const curH = (fitWidth * page.height) / page.width;
+          return [{ side, page: p, w, left: side * box.w + (fitWidth - w) / 2, top: (curH - h) / 2 }];
+        })
+      : [];
+
   return (
-    <div className="editor" ref={rootRef}>
+    <div className="editor">
       <header className="nav-bar">
         <div className="nav-side">
           <IconButton label="문서 목록" onClick={onBack}>
@@ -284,118 +490,144 @@ export function Editor({
           <IconButton label="다시 실행 (Ctrl+Shift+Z)" onClick={redo} disabled={!history?.redo.length}>
             <Redo2 {...ICON} />
           </IconButton>
-          <IconButton label={fullscreen ? "발표 종료" : "발표 모드"} active={fullscreen} onClick={toggleFullscreen}>
-            {fullscreen ? <X {...ICON} /> : <Presentation {...ICON} />}
-          </IconButton>
+          <div className="menu-anchor">
+            <IconButton label="페이지 메뉴" active={showPageMenu} onClick={() => setShowPageMenu(true)} disabled={!page}>
+              <Ellipsis {...ICON} />
+            </IconButton>
+            {showPageMenu && lecture && (
+              <Menu
+                align="right"
+                onClose={() => setShowPageMenu(false)}
+                items={[
+                  { label: "앞에 빈 페이지 추가", icon: <ArrowLeftToLine size={18} />, onSelect: () => insertBlankPage(pageIndex) },
+                  { label: "뒤에 빈 페이지 추가", icon: <ArrowRightToLine size={18} />, onSelect: () => insertBlankPage(pageIndex + 1) },
+                  {
+                    label: "이 페이지 삭제",
+                    icon: <Trash size={18} />,
+                    danger: true,
+                    disabled: lecture.pages.length <= 1,
+                    onSelect: () => setConfirmDelete(true),
+                  },
+                ]}
+              />
+            )}
+          </div>
         </div>
       </header>
 
       <div className="tool-bar">
         {TOOLS.map((t) => (
-          <IconButton key={t.id} label={t.label} active={tool === t.id} onClick={() => setTool(t.id)}>
+          // 누르는 순간 바로 바뀌도록 click보다 먼저 오는 pointerdown에서 고른다
+          <IconButton
+            key={t.id}
+            label={t.label}
+            active={tool === t.id}
+            onPointerDown={() => selectTool(t.id)}
+            onClick={() => selectTool(t.id)}
+          >
             {t.icon}
           </IconButton>
         ))}
-        {isInk && (
-          <>
-            <span className="tool-divider" />
-            {colors.map((c) => (
-              <button
-                key={c}
-                aria-label={`색 ${c}`}
-                className={`swatch${c === color ? " active" : ""}`}
-                onClick={() => (tool === "highlighter" ? setHighlightColor(c) : setPenColor(c))}
-              >
-                <span style={{ background: c }} />
-              </button>
-            ))}
-            <span className="tool-divider" />
-            {sizes.map((_, i) => (
-              <button
-                key={i}
-                aria-label={`굵기 ${i + 1}`}
-                className={`size${i === sizeIndex ? " active" : ""}`}
-                onClick={() => (tool === "highlighter" ? setHighlightSize(i) : setPenSize(i))}
-              >
-                <span style={{ width: 4 + i * 3, height: 4 + i * 3 }} />
-              </button>
-            ))}
-          </>
-        )}
+        <span className="tool-divider" />
+        {colors.map((c) => (
+          <button
+            key={c}
+            aria-label={`색 ${c}`}
+            className={`swatch${c === color ? " active" : ""}`}
+            disabled={!isInk}
+            onPointerDown={() => isInk && pickColor(c)}
+            onClick={() => pickColor(c)}
+          >
+            <span style={{ background: c }} />
+          </button>
+        ))}
+        <span className="tool-divider" />
+        {sizes.map((_, i) => (
+          <button
+            key={i}
+            aria-label={`굵기 ${i + 1}`}
+            className={`size${i === sizeIndex ? " active" : ""}`}
+            disabled={!isInk}
+            onPointerDown={() => isInk && pickSize(i)}
+            onClick={() => pickSize(i)}
+          >
+            <span style={{ width: 4 + i * 3, height: 4 + i * 3 }} />
+          </button>
+        ))}
       </div>
 
-      <div className="stage" ref={stageRef} style={{ padding: `${pad.y}px ${pad.x}px` }}>
-        {page && fitWidth > 0 ? (
-          <div className="page-wrap">
-            <PageCanvas
-              key={page.id}
-              page={page}
-              pdfDoc={pdfDoc}
-              strokes={strokes.current[page.id] ?? EMPTY}
-              cssWidth={fitWidth * zoom}
-              tool={tool}
-              color={color}
-              strokeWidth={sizes[sizeIndex]}
-              clock={clock}
-              onStroke={(s) => {
-                setPageStrokes(s.pageId, [...(strokes.current[s.pageId] ?? EMPTY), s], true);
-                emitStroke(s);
-              }}
-              onEraseStart={() => {
-                eraseBase.current = strokes.current[page.id] ?? EMPTY;
-              }}
-              onErase={(ids) =>
-                setPageStrokes(page.id, (strokes.current[page.id] ?? EMPTY).filter((s) => !ids.has(s.id)), false)
-              }
-              onEraseEnd={() => {
-                const base = eraseBase.current;
-                eraseBase.current = null;
-                if (base && base !== (strokes.current[page.id] ?? EMPTY)) {
-                  const h = historyOf(page.id);
-                  h.undo.push(base);
-                  h.redo = [];
-                  rerender();
+      <div className="stage-area">
+        <div
+          className="stage"
+          ref={stageRef}
+          // 화면에 맞춘 크기에서는 스크롤할 게 없고, 옆에 붙여 둔 페이지 때문에 스크롤이 생기지 않게 감춘다
+          style={{ padding: `${STAGE_PAD.y}px ${STAGE_PAD.x}px`, overflow: zoom > 1 ? "auto" : "hidden" }}
+          onPointerDown={onStagePointerDown}
+          onPointerMove={onStagePointerMove}
+          onPointerUp={onStagePointerUp}
+          onPointerCancel={onStagePointerUp}
+        >
+          {page && fitWidth > 0 ? (
+            <div className="page-wrap" ref={wrapRef}>
+              <PageCanvas
+                key={page.id}
+                page={page}
+                pdfDoc={pdfDoc}
+                strokes={strokes.current[page.id] ?? EMPTY}
+                cssWidth={fitWidth * zoom}
+                tool={tool}
+                color={color}
+                strokeWidth={sizes[sizeIndex]}
+                clock={clock}
+                onStroke={(s) => {
+                  setPageStrokes(s.pageId, [...(strokes.current[s.pageId] ?? EMPTY), s], true);
+                  emitStroke(s);
+                }}
+                onEraseStart={() => {
+                  eraseBase.current = strokes.current[page.id] ?? EMPTY;
+                }}
+                onErase={(ids) =>
+                  setPageStrokes(page.id, (strokes.current[page.id] ?? EMPTY).filter((s) => !ids.has(s.id)), false)
                 }
-              }}
-              onLaser={emitLaser}
-              onPan={(dx, dy) => stageRef.current?.scrollBy(dx, dy)}
-            />
+                onEraseEnd={() => {
+                  const base = eraseBase.current;
+                  eraseBase.current = null;
+                  if (base && base !== (strokes.current[page.id] ?? EMPTY)) {
+                    const h = historyOf(page.id);
+                    h.undo.push(base);
+                    h.redo = [];
+                    rerender();
+                  }
+                }}
+                onLaser={emitLaser}
+              />
+              {peeks.map((peek) => (
+                <div
+                  key={peek.page.id}
+                  className="page-peek"
+                  aria-hidden="true"
+                  style={{ left: peek.left, top: peek.top }}
+                >
+                  <PageThumb
+                    page={peek.page}
+                    pdfDoc={pdfDoc}
+                    strokes={strokes.current[peek.page.id] ?? EMPTY}
+                    width={peek.w}
+                    eager
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="loading">불러오는 중...</div>
+          )}
+        </div>
+        {lecture && (
+          <div className="page-badge" aria-live="polite">
+            {pageIndex + 1} / {lecture.pages.length}
           </div>
-        ) : (
-          <div className="loading">불러오는 중...</div>
         )}
       </div>
-
-      {lecture && (
-        <div className="float-bar">
-          <div className="pill">
-            <button onClick={() => goTo(pageIndex - 1)} disabled={pageIndex <= 0} aria-label="이전 페이지">
-              <ChevronLeft size={18} />
-            </button>
-            <span className="pill-text">
-              {pageIndex + 1} / {lecture.pages.length}
-            </span>
-            <button
-              onClick={() => goTo(pageIndex + 1)}
-              disabled={pageIndex >= lecture.pages.length - 1}
-              aria-label="다음 페이지"
-            >
-              <ChevronLeft size={18} style={{ transform: "scaleX(-1)" }} />
-            </button>
-          </div>
-          <div className="pill">
-            <button onClick={() => zoomTo(zoom / 1.25)} disabled={zoom <= ZOOM_MIN} aria-label="축소">
-              <ZoomOut size={18} />
-            </button>
-            <button className="pill-text" onClick={() => zoomTo(1)} title="화면에 맞추기">
-              {Math.round(zoom * 100)}%
-            </button>
-            <button onClick={() => zoomTo(zoom * 1.25)} disabled={zoom >= ZOOM_MAX} aria-label="확대">
-              <ZoomIn size={18} />
-            </button>
-          </div>
-        </div>
-      )}
 
       {showOverview && lecture && (
         <Overview
@@ -407,8 +639,17 @@ export function Editor({
             goTo(i);
             setShowOverview(false);
           }}
-          onAddBlank={addBlankPage}
           onClose={() => setShowOverview(false)}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`${pageIndex + 1}쪽을 삭제할까요?`}
+          message="이 페이지의 필기도 함께 지워지고 되돌릴 수 없어요."
+          confirmLabel="삭제"
+          danger
+          onConfirm={deleteCurrentPage}
+          onCancel={() => setConfirmDelete(false)}
         />
       )}
     </div>

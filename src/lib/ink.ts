@@ -26,16 +26,28 @@ export function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, w: num
   ctx.lineJoin = "round";
   ctx.strokeStyle = stroke.color;
   ctx.lineWidth = stroke.width * w;
-  if (stroke.tool === "highlighter") ctx.globalAlpha = 0.4;
+  if (stroke.tool === "highlighter") {
+    // multiply로 섞어서 아래 글씨가 형광펜 색에 덮이지 않고 그대로 진하게 보이게 한다
+    ctx.globalAlpha = 0.5;
+    ctx.globalCompositeOperation = "multiply";
+  }
   tracePath(ctx, stroke.points, w, h);
   ctx.stroke();
   ctx.restore();
 }
 
-/** 형광펜을 먼저 그려서 펜 글씨가 형광펜에 가려지지 않게 한다 */
-export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], w: number, h: number): void {
+export function drawHighlights(ctx: CanvasRenderingContext2D, strokes: Stroke[], w: number, h: number): void {
   for (const s of strokes) if (s.tool === "highlighter") drawStroke(ctx, s, w, h);
+}
+
+export function drawPens(ctx: CanvasRenderingContext2D, strokes: Stroke[], w: number, h: number): void {
   for (const s of strokes) if (s.tool === "pen") drawStroke(ctx, s, w, h);
+}
+
+/** 한 캔버스에 같이 그릴 때(썸네일): 형광펜을 먼저 그려서 펜 글씨가 형광펜에 가려지지 않게 한다 */
+export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], w: number, h: number): void {
+  drawHighlights(ctx, strokes, w, h);
+  drawPens(ctx, strokes, w, h);
 }
 
 function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {

@@ -1,22 +1,29 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { LaserTrail, Page, Point, Stroke, Tool } from "../types";
-import { renderPdfPage, type PDFDocumentProxy } from "../lib/pdf";
-import { drawStroke, drawStrokes, hitStroke } from "../lib/ink";
+import { drawCachedPdfPage, renderPdfPage, type PDFDocumentProxy } from "../lib/pdf";
+import { drawHighlights, drawPens, drawStroke, hitStroke } from "../lib/ink";
 import { Laser } from "../lib/laser";
 import { uid } from "../lib/id";
 
 const ERASER_RADIUS = 10; // 화면 기준 px
-const MAX_PIXELS = 12_000_000; // 아이패드 사파리의 캔버스 크기 제한을 넘지 않게
+// 캔버스 4장이 다 이 크기라 너무 크면 확대·넘기기가 버벅인다. 화질과 부드러움 사이에서 고른 값
+const MAX_PIXELS = 5_000_000;
+// 손떨림 보정: 새 점을 이전 점 쪽으로 이만큼 끌어당긴다 (0이면 보정 없음). 최소한만 건다
+const STABILIZE = 0.3;
+const PDF_RERENDER_DELAY = 150; // 확대가 끝나고 이만큼 지난 뒤에 PDF를 새 크기로 다시 그린다
 
-// 펜을 한 번이라도 쓰면 그때부터 손가락 터치는 필기 대신 화면 이동으로 쓴다 (손바닥 무시)
-let penSeen = false;
+/** 화면 너비(css px)에 대해 실제로 그릴 캔버스 픽셀 너비. 미리 그려 두기(prefetch)에서도 같은 값을 쓴다 */
+export function pagePixelWidth(page: Page, cssWidth: number): number {
+  const cssHeight = (cssWidth * page.height) / page.width;
+  const scale = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_PIXELS / (cssWidth * cssHeight)));
+  return Math.round(cssWidth * scale);
+}
 
 type Gesture =
   | { kind: "ink"; pointerId: number; stroke: Stroke }
   | { kind: "erase"; pointerId: number; at: Point }
-  | { kind: "laser"; pointerId: number }
-  | { kind: "pan"; pointerId: number; x: number; y: number };
+  | { kind: "laser"; pointerId: number };
 
 type Props = {
   page: Page;
@@ -32,18 +39,20 @@ type Props = {
   onErase: (ids: Set<string>) => void;
   onEraseEnd: () => void;
   onLaser: (trail: LaserTrail) => void;
-  onPan: (dx: number, dy: number) => void;
 };
 
-/** 한 페이지: PDF(맨 아래) + 저장된 필기 + 지금 긋는 획·레이저(맨 위, 입력도 여기서 받음) */
+/**
+ * 한 페이지. 아래부터 PDF, 형광펜(multiply로 섞여 글씨 밑에 깔린다), 펜, 지금 긋는 획·레이저.
+ * 필기는 펜과 마우스로만 한다. 손가락 터치는 그대로 위로 올려 보내서 필기 화면이 확대·이동·넘기기에 쓴다.
+ */
 export function PageCanvas(props: Props) {
   const { page, pdfDoc, strokes, cssWidth } = props;
   const cssHeight = (cssWidth * page.height) / page.width;
-  const scale = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_PIXELS / (cssWidth * cssHeight)));
-  const pw = Math.round(cssWidth * scale);
-  const ph = Math.round(cssHeight * scale);
+  const pw = pagePixelWidth(page, cssWidth);
+  const ph = Math.round((pw * page.height) / page.width);
 
   const bgRef = useRef<HTMLCanvasElement>(null);
+  const hlRef = useRef<HTMLCanvasElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
   const liveRef = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
@@ -51,12 +60,32 @@ export function PageCanvas(props: Props) {
   const gesture = useRef<Gesture | null>(null);
   const dirty = useRef(true);
   const [laser] = useState(() => new Laser());
+  const bgDrawn = useRef(false);
+
+  // 넘겨 온 페이지처럼 미리 그려 둔 그림이 있으면 화면에 나오기 전에 바로 옮긴다
+  useLayoutEffect(() => {
+    if (!bgDrawn.current && pdfDoc && page.pdfPageIndex !== null) {
+      bgDrawn.current = drawCachedPdfPage(pdfDoc, page.pdfPageIndex, bgRef.current!, pw);
+    }
+  }, [pdfDoc, page, pw]);
 
   useEffect(() => {
     const canvas = bgRef.current!;
     if (pdfDoc && page.pdfPageIndex !== null) {
-      const job = renderPdfPage(pdfDoc, page.pdfPageIndex, canvas, pw);
-      return () => job.cancel();
+      // 처음에는 바로 그리고, 확대로 크기가 바뀔 때는 손을 뗀 뒤 잠깐 기다렸다가 다시 그린다.
+      // 그동안은 이전 그림이 늘어난 채로 보여서 확대 중에 버벅이지 않는다
+      let job: ReturnType<typeof renderPdfPage> | null = null;
+      const timer = window.setTimeout(
+        () => {
+          job = renderPdfPage(pdfDoc, page.pdfPageIndex!, canvas, pw);
+          bgDrawn.current = true;
+        },
+        bgDrawn.current ? PDF_RERENDER_DELAY : 0,
+      );
+      return () => {
+        clearTimeout(timer);
+        job?.cancel();
+      };
     }
     canvas.width = pw;
     canvas.height = ph;
@@ -65,12 +94,22 @@ export function PageCanvas(props: Props) {
     ctx.fillRect(0, 0, pw, ph);
   }, [pdfDoc, page, pw, ph]);
 
+  const drawHighlightLayer = (current?: Stroke) => {
+    const canvas = hlRef.current!;
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawHighlights(ctx, latest.current.strokes, canvas.width, canvas.height);
+    if (current) drawStroke(ctx, current, canvas.width, canvas.height);
+  };
+
   // 획을 확정하는 순간 미리보기가 사라지고 저장된 필기가 늦게 그려져 깜빡이지 않도록 layout effect로 그린다
   useLayoutEffect(() => {
-    const canvas = inkRef.current!;
-    canvas.width = pw;
-    canvas.height = ph;
-    drawStrokes(canvas.getContext("2d")!, strokes, pw, ph);
+    for (const ref of [hlRef, inkRef]) {
+      ref.current!.width = pw;
+      ref.current!.height = ph;
+    }
+    drawHighlightLayer();
+    drawPens(inkRef.current!.getContext("2d")!, strokes, pw, ph);
   }, [strokes, pw, ph]);
 
   useLayoutEffect(() => {
@@ -89,7 +128,11 @@ export function PageCanvas(props: Props) {
         const { width: w, height: h } = canvas;
         ctx.clearRect(0, 0, w, h);
         const g = gesture.current;
-        if (g?.kind === "ink") drawStroke(ctx, g.stroke, w, h);
+        if (g?.kind === "ink") {
+          // 형광펜 미리보기는 형광펜 층에 그려야 글씨 밑에 깔린다
+          if (g.stroke.tool === "highlighter") drawHighlightLayer(g.stroke);
+          else drawStroke(ctx, g.stroke, w, h);
+        }
         if (g?.kind === "erase") {
           ctx.beginPath();
           ctx.arc(g.at.x * w, g.at.y * h, (ERASER_RADIUS * w) / canvas.clientWidth, 0, Math.PI * 2);
@@ -126,17 +169,7 @@ export function PageCanvas(props: Props) {
 
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const ev = e.nativeEvent;
-    if (ev.pointerType === "pen") penSeen = true;
-    if (gesture.current) {
-      // 손바닥으로 화면 이동 중이어도 펜이 닿으면 펜을 우선한다
-      if (gesture.current.kind === "pan" && ev.pointerType !== "touch") gesture.current = null;
-      else return;
-    }
-    if (ev.pointerType === "touch" && penSeen) {
-      gesture.current = { kind: "pan", pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY };
-      e.currentTarget.setPointerCapture(ev.pointerId);
-      return;
-    }
+    if (ev.pointerType === "touch" || gesture.current) return;
     if (ev.pointerType === "mouse" && ev.button !== 0) return;
     e.currentTarget.setPointerCapture(ev.pointerId);
 
@@ -163,17 +196,15 @@ export function PageCanvas(props: Props) {
     const g = gesture.current;
     const ev = e.nativeEvent;
     if (!g || g.pointerId !== ev.pointerId) return;
-    if (g.kind === "pan") {
-      latest.current.onPan(g.x - ev.clientX, g.y - ev.clientY);
-      g.x = ev.clientX;
-      g.y = ev.clientY;
-      return;
-    }
     const coalesced = ev.getCoalescedEvents?.();
     for (const ce of coalesced?.length ? coalesced : [ev]) {
       const p = toPoint(ce);
-      if (g.kind === "ink") g.stroke.points.push(p);
-      else if (g.kind === "erase") {
+      if (g.kind === "ink") {
+        const prev = g.stroke.points[g.stroke.points.length - 1];
+        p.x = Math.round((p.x + (prev.x - p.x) * STABILIZE) * 1e5) / 1e5;
+        p.y = Math.round((p.y + (prev.y - p.y) * STABILIZE) * 1e5) / 1e5;
+        g.stroke.points.push(p);
+      } else if (g.kind === "erase") {
         g.at = p;
         eraseAt(p);
       } else laser.move(p);
@@ -187,11 +218,15 @@ export function PageCanvas(props: Props) {
     gesture.current = null;
     dirty.current = true;
     if (g.kind === "ink") {
+      // 보정으로 끝이 덜 따라온 만큼 펜을 뗀 자리까지 이어서 끝낸다
+      const end = toPoint(e.nativeEvent);
+      const last = g.stroke.points[g.stroke.points.length - 1];
+      if (g.stroke.points.length > 1 && (end.x !== last.x || end.y !== last.y)) g.stroke.points.push(end);
       g.stroke.endedAt = g.stroke.points[g.stroke.points.length - 1].t;
       latest.current.onStroke(g.stroke);
     } else if (g.kind === "erase") {
       latest.current.onEraseEnd();
-    } else if (g.kind === "laser") {
+    } else {
       const points = laser.up(performance.now());
       if (points) latest.current.onLaser({ pageId: page.id, points: points.map(({ x, y, t }) => ({ x, y, t })) });
     }
@@ -201,6 +236,7 @@ export function PageCanvas(props: Props) {
   return (
     <div className="page-canvas" style={style}>
       <canvas ref={bgRef} style={style} />
+      <canvas ref={hlRef} style={style} className="highlight-layer" />
       <canvas ref={inkRef} style={style} />
       <canvas
         ref={liveRef}
