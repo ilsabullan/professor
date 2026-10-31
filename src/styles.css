@@ -508,12 +508,19 @@ button:disabled {
 }
 
 .stage {
+  position: relative; /* 페이지 위치(offsetLeft/Top)를 이 안에서 잰다 */
   flex: 1;
   min-width: 0;
   overflow: auto;
   display: flex;
   /* 손가락 확대·이동·넘기기는 직접 처리한다 */
   touch-action: none;
+  /* 스크롤 막대가 생겼다 사라지며 화면 폭이 바뀌어 페이지가 밀리지 않게 숨긴다 */
+  scrollbar-width: none;
+}
+
+.stage::-webkit-scrollbar {
+  display: none;
 }
 
 .page-wrap {
@@ -567,8 +574,15 @@ button:disabled {
 
 .page-canvas canvas {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
   display: block;
+  pointer-events: none;
+}
+
+/* 확대했을 때 보이는 부분만 선명하게 덧그린 PDF. 그릴 때까지는 숨긴다 */
+.pdf-tile {
+  display: none;
 }
 
 /* 형광펜은 PDF 글씨와 곱해져서 글씨 밑에 칠한 것처럼 보인다 */

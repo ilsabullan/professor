@@ -95,6 +95,41 @@ export function drawCachedPdfPage(
 }
 
 /**
+ * 확대했을 때 화면에 보이는 부분만 선명하게 그린다.
+ * pixelWidth는 페이지 전체를 그렸다고 칠 때의 너비, region은 그중 그릴 부분(같은 픽셀 단위).
+ */
+export function renderPdfRegion(
+  doc: PDFDocumentProxy,
+  pageIndex: number,
+  pixelWidth: number,
+  region: { x: number; y: number; w: number; h: number },
+): { promise: Promise<HTMLCanvasElement | null>; cancel(): void } {
+  let task: RenderTask | null = null;
+  let cancelled = false;
+  const promise = (async () => {
+    const page = await doc.getPage(pageIndex + 1);
+    if (cancelled) return null;
+    const viewport = page.getViewport({ scale: pixelWidth / page.getViewport({ scale: 1 }).width });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(region.w);
+    canvas.height = Math.round(region.h);
+    task = page.render({ canvas, viewport, transform: [1, 0, 0, 1, -region.x, -region.y] });
+    await task.promise;
+    return cancelled ? null : canvas;
+  })().catch((e) => {
+    if (e?.name !== "RenderingCancelledException") console.error(e);
+    return null;
+  });
+  return {
+    promise,
+    cancel() {
+      cancelled = true;
+      task?.cancel();
+    },
+  };
+}
+
+/**
  * PDF 한 페이지를 pixelWidth 너비로 target에 그린다.
  * 다 그린 그림을 한 번에 옮겨서 확대/축소할 때 화면이 깜빡이지 않게 하고, 그려 둔 게 있으면 바로 옮긴다.
  */

@@ -53,10 +53,27 @@ type History = { undo: Stroke[][]; redo: Stroke[][] };
 type XY = { x: number; y: number };
 type TouchGesture =
   | { kind: "drag"; mode: "undecided" | "pan" | "swipe"; start: XY; last: XY; lastTime: number; speed: number }
-  | { kind: "pinch"; d0: number; m0: XY; origin: XY; scale: number; m: XY }
+  | {
+      kind: "pinch";
+      d0: number;
+      origin: XY; // 손가락 사이 지점의 페이지 안 위치 (시작할 때)
+      start: { left: number; top: number; w: number; h: number }; // 시작할 때 페이지 위치·크기
+      stage: { left: number; top: number; w: number; h: number };
+      scale: number;
+      target: { left: number; top: number }; // 손을 떼면 페이지가 놓일 화면 위치
+    }
   | { kind: "idle" }; // 핀치 뒤 남은 손가락은 다 뗄 때까지 무시
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * 확대된 페이지가 실제로 놓일 수 있는 화면 위치 (한 축). 화면보다 작으면 가운데, 크면 스크롤로 갈 수 있는 범위 안.
+ * 확대하는 동안에도 이 범위 안에서만 움직여서 손을 뗄 때 위치가 튀지 않게 한다.
+ */
+const placeAxis = (want: number, size: number, stageStart: number, stageSize: number, pad: number) =>
+  size + pad * 2 <= stageSize
+    ? stageStart + (stageSize - size) / 2
+    : clamp(want, stageStart + stageSize - pad - size, stageStart + pad);
 
 export function Editor({
   lectureId,
@@ -248,7 +265,7 @@ export function Editor({
   const touchGesture = useRef<TouchGesture | null>(null);
   const penDown = useRef(false); // 펜으로 쓰는 동안 닿는 손바닥은 무시한다
   const sliding = useRef(false);
-  const pinchFocus = useRef<{ origin: XY; scale: number; m: XY } | null>(null);
+  const pinchTarget = useRef<{ left: number; top: number } | null>(null);
 
   const pendingTransform = useRef<{ transform: string; origin: string } | null>(null);
   const transformFrame = useRef(0);
@@ -275,12 +292,33 @@ export function Editor({
     });
   };
 
+  /**
+   * 화면을 옮기고 바로 scroll 이벤트를 보낸다. 브라우저의 scroll 이벤트는 다음 프레임에 오는데,
+   * 그 전에 필기 층이 새 위치에 맞춰 그려져야 옮기는 순간 빈 곳이 보이지 않는다
+   */
+  const scrollStage = (dx: number, dy: number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    stage.scrollBy(dx, dy);
+    stage.dispatchEvent(new Event("scroll"));
+  };
+
   const startPinch = () => {
     const [a, b] = [...touches.current.values()];
     const m0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    setWrapTransform(""); // 넘기던 중이었으면 제자리로 돌린 뒤에 잰다
     const r = wrapRef.current!.getBoundingClientRect();
-    setWrapTransform("");
-    touchGesture.current = { kind: "pinch", d0: Math.hypot(a.x - b.x, a.y - b.y), m0, origin: { x: m0.x - r.left, y: m0.y - r.top }, scale: 1, m: m0 };
+    const stage = stageRef.current!;
+    const s = stage.getBoundingClientRect();
+    touchGesture.current = {
+      kind: "pinch",
+      d0: Math.hypot(a.x - b.x, a.y - b.y),
+      origin: { x: m0.x - r.left, y: m0.y - r.top },
+      start: { left: r.left, top: r.top, w: r.width, h: r.height },
+      stage: { left: s.left, top: s.top, w: stage.clientWidth, h: stage.clientHeight },
+      scale: 1,
+      target: { left: r.left, top: r.top },
+    };
   };
 
   const finishSwipe = (dx: number, speed: number) => {
@@ -339,9 +377,16 @@ export function Editor({
     if (g.kind === "pinch") {
       const [a, b] = [...touches.current.values()];
       const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      g.scale = clamp((zoom * Math.hypot(a.x - b.x, a.y - b.y)) / g.d0, ZOOM_MIN, ZOOM_MAX) / zoom;
-      g.m = m;
-      queueWrapTransform(`translate3d(${m.x - g.m0.x}px, ${m.y - g.m0.y}px, 0) scale(${g.scale})`, `${g.origin.x}px ${g.origin.y}px`);
+      const s = clamp((zoom * Math.hypot(a.x - b.x, a.y - b.y)) / g.d0, ZOOM_MIN, ZOOM_MAX) / zoom;
+      g.scale = s;
+      // 손가락 사이 지점이 손가락을 따라가게 놓되, 손을 뗀 뒤 실제로 갈 수 있는 위치로만 놓는다
+      g.target = {
+        left: placeAxis(m.x - g.origin.x * s, g.start.w * s, g.stage.left, g.stage.w, STAGE_PAD.x),
+        top: placeAxis(m.y - g.origin.y * s, g.start.h * s, g.stage.top, g.stage.h, STAGE_PAD.y),
+      };
+      const tx = g.target.left - g.start.left - g.origin.x * (1 - s);
+      const ty = g.target.top - g.start.top - g.origin.y * (1 - s);
+      queueWrapTransform(`translate3d(${tx}px, ${ty}px, 0) scale(${s})`, `${g.origin.x}px ${g.origin.y}px`);
       return;
     }
 
@@ -358,7 +403,7 @@ export function Editor({
       g.mode = zoom <= ZOOM_MIN && Math.abs(tx) > Math.abs(ty) ? "swipe" : "pan";
     }
     if (g.mode === "pan") {
-      stageRef.current?.scrollBy(-dx, -dy);
+      scrollStage(-dx, -dy);
     } else {
       let tx = p.x - g.start.x;
       const atEdge = (tx > 0 && pageIndex === 0) || (tx < 0 && pageIndex >= (lectureRef.current?.pages.length ?? 1) - 1);
@@ -376,12 +421,12 @@ export function Editor({
     touches.current.delete(e.pointerId);
     const g = touchGesture.current;
     if (g?.kind === "pinch" && touches.current.size < 2) {
-      // 확대 배율을 확정하고, 손가락 사이에 있던 지점이 그 자리에 남도록 스크롤을 맞춘다
+      // 확대 배율을 확정하고, 손을 떼기 직전 모습 그대로 남도록 스크롤을 맞춘다 (배율은 반올림하지 않는다)
       const next = clamp(zoom * g.scale, ZOOM_MIN, ZOOM_MAX);
-      const snapped = next < 1.05 ? 1 : Math.round(next * 100) / 100;
-      pinchFocus.current = { origin: g.origin, scale: snapped / zoom, m: g.m };
+      const snapped = next < 1.03 ? 1 : next;
+      pinchTarget.current = snapped === 1 ? null : g.target;
+      flushSync(() => setZoom(snapped));
       setWrapTransform("");
-      setZoom(snapped);
       touchGesture.current = { kind: "idle" };
     } else if (g?.kind === "drag" && g.mode === "swipe") {
       finishSwipe(g.last.x - g.start.x, g.speed);
@@ -390,13 +435,17 @@ export function Editor({
   };
 
   useLayoutEffect(() => {
-    const focus = pinchFocus.current;
+    const target = pinchTarget.current;
     const wrap = wrapRef.current;
     const stage = stageRef.current;
-    if (!focus || !wrap || !stage) return;
-    pinchFocus.current = null;
+    if (!target || !wrap || !stage) return;
+    pinchTarget.current = null;
+    // 이 시점에는 아직 확대 중 모습(transform)이 남아 있어서 그것을 뺀 실제 자리로 잰다
+    const prev = wrap.style.transform;
+    wrap.style.transform = "";
     const r = wrap.getBoundingClientRect();
-    stage.scrollBy(r.left + focus.origin.x * focus.scale - focus.m.x, r.top + focus.origin.y * focus.scale - focus.m.y);
+    wrap.style.transform = prev;
+    scrollStage(r.left - target.left, r.top - target.top);
   }, [zoom]);
 
   // ---- 키보드, 휠 (최신 상태를 쓰도록 ref로 연결) ----

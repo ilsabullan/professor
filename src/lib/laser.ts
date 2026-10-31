@@ -45,13 +45,14 @@ export class Laser {
       if (elapsed > HOLD_MS) alpha = 1 - (elapsed - HOLD_MS) / FADE_MS;
     }
     const width = Math.max(4, w * 0.006);
+    const k = ctx.getTransform().a; // 그림자 번짐은 확대(transform)를 따라가지 않아서 직접 맞춘다
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const trail of this.trails) {
       ctx.shadowColor = "rgba(255, 0, 0, 0.9)";
-      ctx.shadowBlur = width * 2;
+      ctx.shadowBlur = width * 2 * k;
       ctx.strokeStyle = "rgba(255, 45, 45, 0.85)";
       ctx.lineWidth = width;
       tracePath(ctx, trail, w, h);
