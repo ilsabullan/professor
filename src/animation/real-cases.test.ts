@@ -29,6 +29,15 @@ describe('최신 실측 회귀', () => {
     expect(b.values().filter((o) => o.read).map((o) => o.read)).toEqual(['5', '3', '8', '1'])
   })
 
+  it('02:40 실측: "3번째, 4번째 꺼 8과 1을 비교"는 읽지 못한 낙서를 칸으로 세지 않고 8·1을 잡는다', () => {
+    const b = boardFor(fixture('real-sort-024015'))
+    for (const [id, read] of Object.entries({ o7: '3', o8: '5', o9: '8', o10: '1' })) b.get(id)!.read = read
+    const text = '그다음에 이제 3번째, 4번째 꺼 8과 1을 비교해 볼게요. 8과 일 중에 누가 더 크죠?'
+    const compare = groundSpeech(b, text.split(/그\s*다음(?:에)?/).at(-1)!, [], 'compare', 'preview')
+    expect(compare.targets.sort()).toEqual(['o10', 'o9'])
+    expect(groundSpeech(b, '그러면 둘이 자리밖에 바뀔 거예요', compare.targets, 'swap', 'final')).toMatchObject({ move: true })
+  })
+
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {
     const b = boardFor(fixture('real-sort-012918'))
     expect(b.underlineOf('o16')).toBe('o9')

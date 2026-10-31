@@ -41,3 +41,11 @@ describe('이동 표현 (04시 실측)', () => {
   })
 })
 
+
+it('"8일 뒤로"는 8이 뒤로 가는 말이다 (받아쓰기가 조사 "이"를 "일"로 씀)', () => {
+  const b = new Board()
+  b.apply({ type: 'page', info: { page: 1, width: 1280, height: 720, text: '버블 정렬: 인접한 두 값을 비교' } })
+  for (const [i, text] of ['3', '5', '8', '1'].entries()) b.apply({ type: 'text', page: 1, id: `s${i}`, text, x: i * 150 + 200, y: 300, t: 0 })
+  expect(groundSpeech(b, '아니, 그러니까 8일 뒤로 가겠죠?', ['o3', 'o4'], 'a', 'final')).toMatchObject({ move: true, targets: ['o3', 'o4'] })
+  expect(groundSpeech(b, '일 뒤로 가겠죠', [], 'a', 'final').targets).toEqual([])
+})

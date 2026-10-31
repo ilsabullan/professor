@@ -53,8 +53,12 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   })
   const ordered = [...values].sort((a, b) => (engine?.settled(a.id)?.x ?? a.bbox.x) - (engine?.settled(b.id)?.x ?? b.bbox.x))
   const ordinals = [...actionText.matchAll(/(\d+)\s*번째|첫\s*번째|두\s*번째/g)].map((m) => m[1] ? Number(m[1]) : m[0].startsWith('첫') ? 1 : 2)
-  if (ordinals.length) {
-    named = ordinals.flatMap((n) => ordered[n - 1] ? [ordered[n - 1].id] : [])
+  // 서수는 값이 있는 칸만 센다. 말한 숫자가 모두 특정되면 숫자를 믿는다
+  // (실측 024015: "3번째, 4번째 꺼 8과 1을"에서 읽지 못한 낙서까지 칸으로 세어 엉뚱한 쌍을 잡았다)
+  const cells = ordered.filter((o) => o.read ?? o.text)
+  const row = cells.length >= Math.max(0, ...ordinals) ? cells : ordered
+  if (ordinals.length && !(named.length >= 2 && named.length === mentions.length)) {
+    named = ordinals.flatMap((n) => row[n - 1] ? [row[n - 1].id] : [])
   }
   const compare = /(비교|비유|더\s*크|더\s*작)/.test(actionText)
   const freshFocus = focus.filter((id) => values.some((o) => o.id === id))
@@ -68,15 +72,17 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   const move = !negated && (sort || MOVE.test(actionText))
   if (/버블|인접/.test(board.page.text ?? '')) {
     // "앞에 있는 값을 먼저 비교"는 처음 두 칸. 읽은 값과 일치할 때만 해석한다.
-    if (/앞에.{0,25}먼저\s*비교/.test(actionText) && named.length === 1 && ordered.slice(0, 2).some((o) => o.id === named[0])) {
-      targets = ordered.slice(0, 2).map((o) => o.id)
+    const line = cells.length >= 2 ? cells : ordered
+    if (/앞에.{0,25}먼저\s*비교/.test(actionText) && named.length === 1 && line.slice(0, 2).some((o) => o.id === named[0])) {
+      targets = line.slice(0, 2).map((o) => o.id)
     }
-    const directional = actionText.match(/(\d+|[영일이삼사오육칠팔구])(?:이|가|을|를)?\s*(뒤로|앞으로)/)
+    // 숫자 뒤 '일'은 조사 '이'를 잘못 받아쓴 것이다 (실측 bent-frame: "8일 뒤로 가겠죠"를 1이 뒤로 가는 말로 읽음)
+    const directional = actionText.match(/(\d+|[영일이삼사오육칠팔구])(?:이|가|을|를|(?<=\d)일)?\s*(뒤로|앞으로)/)
     const subject = directional ? values.filter((o) => (o.read ?? o.text) === (numberWords[directional[1]] ?? directional[1])) : []
     const solo = subject.length === 1 ? subject[0].id : targets.length === 1 ? targets[0] : undefined
     if (move && solo && /뒤로|앞으로/.test(actionText)) {
-      const index = ordered.findIndex((o) => o.id === solo)
-      const other = ordered[index + (/뒤로/.test(actionText) ? 1 : -1)]
+      const index = line.findIndex((o) => o.id === solo)
+      const other = index < 0 ? undefined : line[index + (/뒤로/.test(actionText) ? 1 : -1)]
       targets = other ? [solo, other.id] : []
     }
   }
