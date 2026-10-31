@@ -38,6 +38,16 @@
         "cd /Users/hurdoo/coding/worktrees/ilsabullan-professor-move && DEV_HTTP=1 npm run dev -- --port 5175 --strictPort"
       ],
       "port": 5175
+    },
+    {
+      "name": "professor-pause",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/hurdoo/coding/worktrees/ilsabullan-professor-pause && npm run dev -- --port 5176 --strictPort"
+      ],
+      "port": 5176,
+      "url": "https://localhost:5176"
     }
   ]
 }

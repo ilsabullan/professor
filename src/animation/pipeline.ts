@@ -9,7 +9,7 @@ import { Engine, Player, type PlayStep } from './engine'
 import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
 import { quickFromBoard, quickFromSpeech } from './quick'
-import { describeGrounding, type GateMode, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
+import { describeGrounding, type GateMode, groundSpeech, keepGrounded, mentionedValues, planNumericSort, planNumericSwap, planRestore, rejectUngrounded, type Grounding } from './grounding'
 import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput, type SttProvider } from './speech'
@@ -65,6 +65,8 @@ const DELAY: Record<string, number> = {
 
 /** 같은 쌍을 다시 바꾸면 되풀이로 보는 시간. 실측에서 받아쓰기가 한 문장을 쪼개 "바꿔요"가 두 번 들어왔다 */
 const SWAP_REPEAT_MS = 10000
+/** "안 바뀐다"고 한 쌍을 숫자를 다시 말하지 않고는 바꾸지 않는 시간 */
+const HELD_MS = 30000
 
 /** 두 객체의 맞교환이면 그 쌍의 키 */
 export function swapKey(ops: Op[]): string | null {
@@ -125,6 +127,8 @@ export class Pipeline {
   private focus: { ids: string[]; t: number } = { ids: [], t: 0 }
   /** 마지막으로 실행한 두 값 교환. 같은 말을 되풀이해 원래대로 되돌리는 것을 막는다 */
   private lastSwap: { key: string; t: number } | null = null
+  /** "안 바뀌겠죠"라고 한 두 값 (실측: 바로 뒤의 "빨리 바뀐다"에 그 둘을 교환함) */
+  private heldPair: { key: string; t: number } | null = null
   /** 멈춤 확정: 받아쓰기가 이 시간 동안 그대로면 우리가 문장을 확정한다 */
   private commitTimer: ReturnType<typeof setTimeout> | undefined
   /** 지금 받아쓰기 덩어리에서 이미 확정한 앞부분 (브라우저가 같은 덩어리를 계속 늘려 보낸다) */
@@ -176,6 +180,7 @@ export class Pipeline {
       call: (imageB64, text, signal) => sceneCall({ model: 'claude-haiku-5-5', thinking: 'off' }, imageB64, text, signal),
       snapshot: () => snapshotB64(this.board, this.engine, 960, true),
       keep: (id) => this.engine.isTakenOver(id),
+      speech: () => this.utter.slice(-6).map((u) => u.text),
       log: (type, data) => this.log(type, data),
       onApplied: ({ removed }) => {
         if (removed.length) this.engine.forget(removed)
@@ -315,7 +320,7 @@ export class Pipeline {
     this.schedule({ kind: ev.kind, desc: ev.desc, t: ev.t, quickMs, grounding: {
       id: `${this.epoch}:ink:${++this.actionSeq}`, phase: 'ink', text: ev.desc,
       targets: ev.objId ? [ev.objId] : [], move: ev.kind === '가리키기',
-      flow: ev.kind === '화살표' || ev.kind === '덧그리기', stop: false, sort: false,
+      flow: ev.kind === '화살표' || ev.kind === '덧그리기', stop: false, sort: false, restore: false, negated: false,
     } })
   }
 
@@ -414,6 +419,7 @@ export class Pipeline {
     this.abortInflight('중단(확정 발화)')
     this.player.cancelPending()
     const grounding = this.speechGrounding(final, tEnd, 'final')
+    if (grounding.negated && grounding.targets.length === 2) this.heldPair = { key: [...grounding.targets].sort().join('|'), t: tEnd }
     if (/(비교|비유|더\s*크|더\s*작)/.test(final) || grounding.targets.length === 2) {
       const next = final.split(/그\s*다음(?:에)?/).at(-1)!
       const nextGrounding = next !== final ? this.speechGrounding(next, tEnd, 'preview') : grounding
@@ -498,9 +504,10 @@ export class Pipeline {
     const consumer = this.consume(rec, trig.grounding, ctrl.signal, settings.thr)
     try {
       const g = trig.grounding
-      const plan = g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null
+      const restore = g?.phase === 'final' ? planRestore(this.engine, g) : null
+      const plan = restore ?? (g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null)
       if (plan) {
-        rec.model = g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'
+        rec.model = restore ? 'local-restore' : g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'
         rec.cfg += '/로컬이동'
         consumer.onText(JSON.stringify({ conf: 1, ...plan }) + '\n')
         rec.tDone = rec.tEnd = performance.now()
@@ -660,12 +667,20 @@ export class Pipeline {
           this.log('rejected', { reqId: rec.id, reason, ops, ...this.stateForLog() })
         }
         if (!ps.valid || ops.some((op) => !op)) { reject('완성된 유효한 동작 묶음이 아님'); return }
-        const validOps = ops as Op[]
-        if (!validOps.length) return
-        const swap = swapKey(validOps)
-        const reason = (swap && this.lastSwap?.key === swap && performance.now() - this.lastSwap.t < SWAP_REPEAT_MS ? '방금 바꾼 두 값을 다시 바꿈(되풀이한 말)' : null)
-          ?? (grounding ? rejectUngrounded(validOps, grounding, this.board, gate) : null)
-        if (reason) { reject(reason); return }
+        if (!ops.length) return
+        const swap = swapKey(ops as Op[])
+        const now = performance.now()
+        const text = grounding?.text ?? ''
+        // 같은 쌍을 연달아 바꾸면 그 사이에 다른 이동이 없었다는 뜻이다. "다시"라고 하지 않았으면 되풀이한 말로 본다
+        // (실측: 교환이 막히자 "5와 3이 바뀝니다"를 20초 동안 세 번 말함)
+        const repeat = swap && this.lastSwap?.key === swap && (now - this.lastSwap.t < SWAP_REPEAT_MS || !/다시|또|한\s*번\s*더/.test(text)) ? '방금 바꾼 두 값을 다시 바꿈(되풀이한 말)'
+          : swap && this.heldPair?.key === swap && now - this.heldPair.t < HELD_MS && !mentionedValues(text).length ? '안 바뀐다고 한 두 값' : null
+        if (repeat) { reject(repeat); return }
+        // 근거 없는 동작만 빼고 나머지는 실행한다
+        const kept = grounding ? keepGrounded(ops as Op[], grounding, this.board, gate) : { ops: ops as Op[], dropped: [], reason: null }
+        if (!kept.ops.length) { reject(kept.reason!); return }
+        if (kept.dropped.length) this.log('rejected', { reqId: rec.id, reason: kept.reason, ops: kept.dropped, partial: true, ...this.stateForLog() })
+        const validOps = kept.ops
         const mutations = validOps.filter((op) => op.v === 'move').map((op) => [op.id, op.to, op.along]).sort()
         const st: PlayStep = {
           reqId: rec.id, ops: validOps, applied: 0, cap: ps.cap, capShown: false, open: false, startedAt: null, maxDur: 0,
@@ -677,6 +692,8 @@ export class Pipeline {
             expectedLayout = this.engine.layoutKey()
             // 다른 이동이 끼면 되풀이가 아니라 새 교환이므로 기록을 바꾼다
             if (validOps.some((op) => op.v === 'move')) this.lastSwap = swap ? { key: swap, t: performance.now() } : null
+            // 되돌린 뒤 같은 교환을 다시 보여주는 것은 되풀이가 아니다
+            if (validOps.some((op) => op.v === 'restore')) this.lastSwap = null
             this.log('state', { reqId: rec.id, ...this.stateForLog() }) },
         }
         made++
@@ -730,6 +747,7 @@ export class Pipeline {
   resetAnimation() {
     this.epoch++
     this.lastSwap = null
+    this.heldPair = null
     clearTimeout(this.timer)
     this.pending = null
     this.interim = ''

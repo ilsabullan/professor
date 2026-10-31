@@ -229,6 +229,19 @@ describe('eraseAt (지우개로 애니메이션 지우기)', () => {
     expect(e.eraseAt({ x: 220, y: 500 }, 10).strokeIds).toEqual(['so1'])
   })
 
+  it('돌려 놓은 필기는 돌아간 자리에서 지워진다', () => {
+    const { b } = setup()
+    // 가로로 긴 선 하나: 90도 돌리면 세로가 된다
+    const pts = Array.from({ length: 21 }, (_, i) => ({ x: 500 + i * 10, y: 600, p: 0.5, t: i }))
+    b.objs.push({ id: 'o9', kind: 'line', strokes: [{ id: 'so9', pts }], bbox: { x: 500, y: 600, w: 200, h: 1 }, t: 0 })
+    const e = new Engine(b, () => {})
+    run(e, [{ v: 'rotate', id: 'o9', deg: 90, dur: 300 }])
+    expect(e.isTakenOver('o9')).toBe(true)
+    // 원래 가로선 끝(690,600)은 비었고, 돌아간 세로선 끝(600,690)에 닿아야 한다
+    expect(e.eraseAt({ x: 690, y: 600 }, 6).strokeIds).toEqual([])
+    expect(e.eraseAt({ x: 600, y: 690 }, 6).strokeIds).toEqual(['so9'])
+  })
+
   it('흐름은 그 선 위를 지나면 멈춘다', () => {
     const { e } = setup()
     run(e, [{ v: 'flow', along: 'o2', n: 6, speed: 1, color: '#cdf0ff', rev: false }])
@@ -263,4 +276,42 @@ describe('넘겨받은 필기의 모양', () => {
     expect(new Set(drawn.map((d) => d.color))).toEqual(new Set(['#ffffff']))
     expect(new Set(drawn.map((d) => d.width))).toEqual(new Set([6]))
   })
+})
+
+describe('회전·되돌리기', () => {
+  it('rotate 값 정리: loop 없이 각도만, 너무 작은 각도는 버림, restore는 id 없이도 된다', () => {
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', deg: 45 })).toEqual({ v: 'rotate', id: 'o1', deg: 45, dur: 700 })
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', deg: 0.2 })).toBeNull()
+    expect(sanitizeOp({ v: 'rotate', id: 'o1', loop: true, about: 'o2' })).toMatchObject({ deg: 30, about: 'o2', loop: true, dur: 2000 })
+    expect(sanitizeOp({ v: 'restore' })).toEqual({ v: 'restore', dur: 700 })
+  })
+
+  it('자전(deg 360 loop)은 한 방향으로 계속 돌고, 이동한 객체를 restore하면 원래 자리로 온다', () => {
+    const { b } = setup()
+    const e = new Engine(b, () => {})
+    e.beginStep()
+    e.applyOp({ v: 'rotate', id: 'o1', deg: 360, loop: true, dur: 1000 }, 0)
+    e.tick(250, .25)
+    expect(e.anim.o1.rot).toBeCloseTo(Math.PI / 2)
+    e.tick(750, .5)
+    expect(e.anim.o1.rot).toBeCloseTo(3 * Math.PI / 2)
+    e.applyOp({ v: 'move', id: 'o2', by: [100, 0], dur: 200 }, 800)
+    e.tick(1100, .3)
+    expect(e.offset('o2').x).toBeCloseTo(100)
+    e.applyOp({ v: 'restore', dur: 200 }, 1200)
+    e.tick(1500, .3)
+    expect(e.offset('o2').x).toBeCloseTo(0)
+    expect(e.anim.o1.spin).toBeUndefined()
+    expect(Math.cos(e.anim.o1.rot!)).toBeCloseTo(1)
+  })
+})
+
+it('"다시 돌아오세요"는 움직인 것이 있을 때만 모델 없이 되돌린다', async () => {
+  const { planRestore, groundSpeech } = await import('./grounding')
+  const { b, e } = setup()
+  const g = groundSpeech(b, '다시 돌아오세요. 다시 돌아오세요.', [], 'r', 'final')
+  expect(planRestore(e, g)).toBeNull()
+  run(e, [{ v: 'move', id: 'o1', by: [50, 0], dur: 100 }])
+  expect(planRestore(e, g)?.ops).toEqual([{ v: 'restore', dur: 700 }])
+  expect(planRestore(e, groundSpeech(b, '응답이 돌아오면', [], 'r', 'final'))).toBeNull()
 })

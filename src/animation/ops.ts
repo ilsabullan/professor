@@ -22,6 +22,13 @@ export type Op =
       life?: number
     }
   | { v: 'move'; id: string; to?: [number, number] | string; along?: string; by?: [number, number]; dur: number; loop?: boolean }
+  /**
+   * 기준점(about: 좌표 또는 객체 id, 없으면 자기 중심)을 축으로 돌림. deg는 도(시계 방향 +).
+   * loop: |deg|<360이면 ±deg 왕복(진자), 360 이상이면 계속 회전(자전). stop id로 멈춘다
+   */
+  | { v: 'rotate'; id: string; deg: number; about?: [number, number] | string; dur: number; loop?: boolean }
+  /** 움직이거나 돌린 객체를 처음 자리로 되돌림 (id 없으면 전부) */
+  | { v: 'restore'; id?: string; dur: number }
   | { v: 'color'; id: string; color: string }
   | { v: 'scale'; id: string; k: number; dur: number }
   | { v: 'pulse'; id: string }
@@ -106,6 +113,19 @@ export function sanitizeOp(raw: unknown): Op | null {
       // 반복은 경로를 따라갈 때만. 한 바퀴는 조금 느리게
       const loop = o.loop === true && !!along
       return { v: 'move', id, to, along, by, dur: loop ? clamp(num(o.dur, 3000), 1200, 8000) : dur(o.dur), ...(loop ? { loop } : {}) }
+    }
+    case 'rotate': {
+      const id = str(o.id)
+      if (!id) return null
+      const loop = o.loop === true
+      const deg = clamp(num(o.deg, loop ? 30 : 90), -1080, 1080)
+      if (Math.abs(deg) < 1) return null
+      const about = xy(o.about) ?? str(o.about) ?? undefined
+      return { v: 'rotate', id, deg, ...(about ? { about } : {}), dur: loop ? clamp(num(o.dur, 2000), 600, 8000) : dur(o.dur), ...(loop ? { loop } : {}) }
+    }
+    case 'restore': {
+      const id = str(o.id) ?? undefined
+      return { v: 'restore', ...(id ? { id } : {}), dur: dur(o.dur) }
     }
     case 'color': {
       const id = str(o.id)

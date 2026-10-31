@@ -4,10 +4,11 @@ import { Board } from './board'
 import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
-import { groundSpeech, rejectUngrounded } from './grounding'
+import { quickFromBoard } from './quick'
+import { groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
-import { parseScene } from './scene'
+import { describeScene, parseScene, SCENE_PROMPT } from './scene'
 import type { InkEvent } from '../shared/ink'
 
 interface RecordedCase {
@@ -187,11 +188,11 @@ describe('막는 규칙 강도 (04:19 지구 공전 실측)', () => {
     expect(new Engine(b, () => {}).validateStep(orbit)).toBeNull()
   })
 
-  it('단어 목록 끔: 확정 발화에 이동 단어("돌면서")가 없어도 막지 않는다', () => {
+  it('확정 발화의 "돌면서"는 이동 지시다 (06:20 실측에서 "지구가 돌아요"가 막혔음)', () => {
     const { b } = setupEarth()
     const g = groundSpeech(b, text, [], 'earth', 'final')
-    expect(g.move).toBe(false)
-    expect(rejectUngrounded(orbit, g, b, 'strict')).toBe('이동을 지시한 입력이 없음')
+    expect(g.move).toBe(true)
+    expect(rejectUngrounded(orbit, g, b, 'strict')).toBeNull()
     expect(rejectUngrounded(orbit, g, b, 'words')).toBeNull()
   })
 
@@ -203,5 +204,161 @@ describe('막는 규칙 강도 (04:19 지구 공전 실측)', () => {
     const g = groundSpeech(b, '그럼 둘이 바뀌겠죠?', compare.targets, 'swap', 'final')
     const raw = c.failures.find((f) => f.n === 132)!.request!.raw
     expect(rejectUngrounded(opsOf(raw), g, b, 'minimal')).toBe('지금 말한 비교/이동 대상과 다름')
+  })
+})
+
+describe('06~07시 실측 회귀', () => {
+  // logs/20261101-064132-7bx0.jsonl: 손글씨 5 3 8 1
+  const sortAt = (n: number) => {
+    const c = fixture('real-sort-064132')
+    const b = boardAt(c, n)
+    const id = realIds(c, b, n)
+    for (const [rid, read] of Object.entries({ o8: '5', o9: '3', o10: '8', o11: '1' })) b.get(id(rid))!.read = read
+    return { b, id }
+  }
+
+  it('"5와 3이 바뀝니다"를 교환 지시로 보고 모델의 5↔3 교환을 통과시킨다 (n=217에서 막혔음)', () => {
+    const { b, id } = sortAt(210)
+    const g = groundSpeech(b, '뭐가 더 크겠죠? 그러면은 5와 3이 바뀝니다', [], 'swap', 'final')
+    expect(g).toMatchObject({ move: true, targets: [id('o8'), id('o9')] })
+    const raw = '{"ops":[{"v":"move","id":"o8","to":"o9"},{"v":"move","id":"o9","to":"o8"}],"cap":"5와 3을 서로 바꿈"}'
+    expect(rejectUngrounded(remapOps(opsOf(raw), id), g, b)).toBeNull()
+  })
+
+  it('"안 바뀌겠더라"는 교환하지 않는다 (n=402에서 5↔8을 교환했음)', () => {
+    const { b, id } = sortAt(398)
+    const g = groundSpeech(b, '안 바뀌겠더라.', [id('o8'), id('o10')], 'noswap', 'final')
+    expect(g.move).toBe(false)
+    const raw = '{"conf":1,"ops":[{"v":"move","id":"o8","to":"o10","dur":700},{"v":"move","id":"o10","to":"o8","dur":700}],"cap":"5와 8 교환"}'
+    expect(rejectUngrounded(remapOps(opsOf(raw), id), g, b)).toBe('이동을 지시한 입력이 없음')
+  })
+
+  it('실측에서 놓친 이동 표현과 부정 표현', () => {
+    const b = new Board()
+    const move = (t: string) => groundSpeech(b, t, [], 'm', 'final').move
+    for (const t of ['빨리 바뀐다', '이동을 해볼게요.', '오른쪽으로 이만큼 이동', '포물선이 오른쪽으로 이동했어요.', '공은 떨어져봐.', '지구가 돌아요', '진자를 움직여줘', '이 호를 따라 왔다 갔다 해요.', '끝까지 올라가면', '잠깐 멈췄다가 다시 내려와요.'])
+      expect(move(t), t).toBe(true)
+    for (const t of ['안 바뀌겠죠.', '정현욱 씨 공이 안 떨어져요', '앞에 평행이동이에요', '여기 정렬 안 된 배열이 있어요.'])
+      expect(move(t), t).toBe(false)
+    expect(groundSpeech(b, '다시 돌아오세요. 다시 돌아오세요.', [], 'r', 'final').restore).toBe(true)
+  })
+
+  it('오른쪽으로 옮기자는데 왼쪽으로 미는 응답은 막는다 (064132 n=705: by [-96,0])', () => {
+    const b = new Board()
+    const g = groundSpeech(b, '포물선을 오른쪽으로 이만큼 이동', [], 'dir', 'final')
+    expect(rejectUngrounded([sanitizeOp({ v: 'move', id: 'o5', by: [-96, 0], dur: 900 })!], g, b)).toBe('말한 방향과 반대로 이동')
+    expect(rejectUngrounded([sanitizeOp({ v: 'move', id: 'o5', by: [96, 0], dur: 900 })!], g, b)).toBeNull()
+  })
+
+  // logs/20261101-062040-k4sv.jsonl n=1195: "그래서 지구가 돌면서 여름에서 겨울로 바뀌어요"에 대한 응답 원문
+  const earthRaw = '{"conf":0.7,"ops":[{"v":"flow","along":"o2","n":6,"speed":1.0,"color":"amber"},{"v":"move","id":"o1","along":"o2","loop":true,"dur":6000}],"cap":"지구가 공전 궤도를 따라 돈다"}'
+  const earthAt = () => {
+    const c = fixture('real-orbit-062040')
+    const b = boardAt(c, 1189)
+    const id = realIds(c, b, 1189)
+    return { b, id, g: groundSpeech(b, '그래서 지구가 돌면서 여름에서 겨울로 바뀌어요', [], 'earth', 'final') }
+  }
+
+  it('장면 해석이 "공전 궤도"라고 붙인 타원을 흐름·공전 경로로 쓴다', () => {
+    const { b, id, g } = earthAt()
+    expect(b.get(id('o2'))?.label).toMatch(/궤도/)
+    const ops = remapOps(opsOf(earthRaw), id)
+    expect(keepGrounded(ops, g, b)).toMatchObject({ ops, dropped: [], reason: null })
+    expect(new Engine(b, () => {}).validateStep(ops)).toBeNull()
+  })
+
+  it('흐름 하나가 근거 없이 막혀도 같은 단계의 공전 이동은 살린다', () => {
+    const { b, id, g } = earthAt()
+    const ops = remapOps(opsOf(earthRaw), id)
+    const badFlow = { ...ops[0], along: id('o3') } as Op // 태양(경로 아님)
+    const kept = keepGrounded([badFlow, ops[1]], g, b)
+    expect(kept.ops).toEqual([ops[1]])
+    expect(kept.reason).toBe('흐름의 근거 또는 연결 경로가 없음')
+  })
+
+  it('교환의 한쪽만 막히면 단계 전체를 막는다', () => {
+    const { b, id } = sortAt(210)
+    const g = groundSpeech(b, '5와 3이 바뀝니다', [], 'swap', 'final')
+    const ops = remapOps(opsOf('{"ops":[{"v":"move","id":"o8","to":"o10"},{"v":"move","id":"o10","to":"o8"}],"cap":"x"}'), id)
+    expect(keepGrounded(ops, g, b).ops).toEqual([])
+  })
+
+  // logs/20261101-065948-uid5.jsonl: 천장 o36, 진자 원 o37
+  it('진자: 매단 점을 축으로 왕복시키고 stop·restore로 멈추고 되돌린다', () => {
+    const c = fixture('real-pendulum-065948')
+    const b = boardAt(c, 1727)
+    // 실측의 진자(줄+추를 한 객체로 그림, 장면 해석은 '세포'로 붙임)
+    const bob = b.objs.find((o) => o.strokes.some((s) => s.id === 'mvwyfxh7zwh4srsw'))!.id
+    expect(b.get(bob)?.label).toBe('세포')
+    const g = groundSpeech(b, '진자를 움직여줘', [], 'pend', 'final')
+    const swing = sanitizeOp({ v: 'rotate', id: bob, deg: 30, about: [500, 35], loop: true, dur: 2000 })!
+    expect(rejectUngrounded([swing], g, b)).toBeNull()
+    expect(rejectUngrounded([swing], groundSpeech(b, '진자가 매달려 있어요.', [], 'p0', 'final'), b)).toBe('돌리라는 입력이 없음')
+    const e = new Engine(b, () => {})
+    expect(e.validateStep([swing])).toBeNull()
+    const before = e.settled(bob)
+    e.beginStep()
+    e.applyOp(swing, 0)
+    e.tick(500, .5)
+    expect(e.anim[bob].rot).toBeCloseTo(Math.PI / 6)
+    expect(e.settled(bob)).toEqual(before) // 왕복은 제자리 기준
+    expect(e.describe()).toContain(`${bob}(왕복)`)
+    e.applyOp({ v: 'stop', id: bob }, 600)
+    e.tick(1500, .5)
+    expect(e.anim[bob].rot).toBeCloseTo(Math.PI / 6)
+    e.applyOp({ v: 'restore', dur: 300 }, 1600)
+    e.tick(2000, .4)
+    expect(e.anim[bob].rot).toBeCloseTo(0)
+  })
+
+  it('장면 해석 프롬프트에 최근 발화가 들어간다 (공을 사람 머리, 진자를 세포로 붙였음)', () => {
+    const b = boardAt(fixture('real-pendulum-065948'), 1727)
+    const text = describeScene(b, ['천장에', '진자가 매달려 있어요.'])
+    expect(text).toContain('교수자의 최근 발화')
+    expect(text).toContain('진자가 매달려 있어요.')
+    expect(SCENE_PROMPT).not.toContain('세포')
+  })
+})
+
+it('064132: 장면 해석 전의 왼쪽 테두리 획이 있어도 정렬 완료를 계산한다', () => {
+  const c = fixture('real-sort-064132')
+  const b = boardFor(c)
+  for (const [id, read] of Object.entries({ o8: '5', o9: '3', o10: '8', o11: '1' })) b.get(id)!.read = read
+  const plan = planNumericSort(b, new Engine(b, () => {}), '아무튼 정렬이 완료되면은')
+  expect(plan?.cap).toBe('1, 3, 5, 8 순서로 정렬')
+})
+
+describe('좌표축 (06:48 실측: x축 화살표에 TCP 패킷 같은 입자가 흐름)', () => {
+  /** 사례를 다시 그리며 '화살표' 사건마다 즉시 반응을 모은다 */
+  const arrowQuicks = (name: string) => {
+    const b = new Board()
+    const out: { id: string; ops: Op[] }[] = []
+    for (const e of fixture(name).events) {
+      const ev = b.apply(e)
+      if (ev?.kind === '화살표' && ev.objId) out.push({ id: ev.objId, ops: quickFromBoard(ev, b) })
+    }
+    return { b, out }
+  }
+
+  it('좌표평면의 x축·이동량 화살표에는 입자를 흘리지 않는다', () => {
+    const { b, out } = arrowQuicks('real-graph-064858')
+    expect(out.length).toBeGreaterThanOrEqual(3)
+    expect(out.every((q) => q.ops.length === 0)).toBe(true)
+    expect([...b.axes()].sort()).toEqual(['o2', 'o3'])
+    expect(b.isFlowPath('o3')).toBe(false)
+  })
+
+  it('포물선 실측의 축(머리를 한 획에 그린 x축)도 축으로 본다', () => {
+    for (const name of ['real-parabola-040451', 'real-parabola-041515']) expect(boardFor(fixture(name)).axes().size, name).toBe(2)
+  })
+
+  it('TCP 화살표와 배열 테두리는 축이 아니고, TCP 화살표에는 그대로 입자가 흐른다', () => {
+    const { out } = arrowQuicks('real-tcp-012355')
+    expect(out.length).toBeGreaterThan(0)
+    expect(out.every((q) => q.ops[0]?.v === 'flow')).toBe(true)
+    for (const name of ['real-sort-012355', 'real-sort-064132', 'real-sort-022839', 'real-sort-055444', 'bubble-sort-tall-eight', 'real-blood-012355', 'real-orbit-062040']) {
+      const b = new Board()
+      for (const e of fixture(name).events) { b.apply(e); expect(b.axes().size, name).toBe(0) }
+    }
   })
 })
