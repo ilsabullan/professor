@@ -1,0 +1,340 @@
+/* 테스트 패널(오른쪽)과 애니메이션 오버레이. 편집기 스타일과 섞이지 않게 .lab / .anim-layer 안에만 건다 */
+.lab {
+  --board: #1b2420;
+  --panel: #111715;
+  --line: #2a3631;
+  --ink: #e9efe9;
+  --dim: #93a39b;
+  --cyan: #5ec8e6;
+  --red: #ff5a46;
+  --green: #7be596;
+  --amber: #ffc65a;
+  --field: #0d1311;
+  --btn: #1d2925;
+  color-scheme: dark;
+  width: 420px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font-family: 'IBM Plex Sans KR', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.lab-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lab-head .sub {
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lab .chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lab .panel {
+  flex: 1;
+}
+
+.anim-layer {
+  --line: #2a3631;
+  --ink: #e9efe9;
+  --dim: #93a39b;
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.anim-layer canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.lab .chip {
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.lab .chip.ok,
+.lab .ok {
+  color: var(--green);
+}
+
+.lab .chip.ok {
+  border-color: #2f5a3e;
+}
+
+.lab .chip.warn {
+  color: var(--amber);
+  border-color: #5d4c26;
+}
+
+.lab .chip.bad,
+.lab .bad {
+  color: var(--red);
+}
+
+.lab .chip.bad {
+  border-color: #6a2a24;
+}
+
+.lab .mut {
+  color: var(--dim);
+}
+
+.anim-layer .overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.anim-layer .caption {
+  position: absolute;
+  left: 50%;
+  bottom: 4%;
+  transform: translateX(-50%);
+  max-width: 86%;
+  text-align: center;
+  font-family: 'Nanum Pen Script', cursive;
+  font-size: clamp(20px, 3.2vw, 34px);
+  color: #fff;
+  text-shadow: 0 2px 10px #000b;
+}
+
+.anim-layer .caption .fb {
+  margin-left: 14px;
+  display: inline-flex;
+  gap: 8px;
+  vertical-align: middle;
+  pointer-events: auto;
+  font-family: 'IBM Plex Sans KR', system-ui, sans-serif;
+}
+
+.anim-layer .caption .fb button {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #1d2925cc;
+  color: var(--ink);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.anim-layer .caption .fb-done {
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.lab .panel {
+  border-left: 1px solid var(--line);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lab .panel section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lab .panel section.grow {
+  flex: 1;
+}
+
+.lab .panel h2 {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--dim);
+  margin: 0 0 7px;
+  letter-spacing: 0.3px;
+}
+
+.lab .row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.lab .row:first-of-type {
+  margin-top: 0;
+}
+
+.lab .btn {
+  background: var(--btn);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.lab .btn:hover {
+  border-color: #3d5048;
+}
+
+.lab .btn.sm {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.lab .btn.on {
+  background: #1f3b45;
+  border-color: #2f6474;
+}
+
+.lab .btn.issue {
+  border-color: #6a2a24;
+  color: #ffb3a8;
+}
+
+.lab .btn.rec {
+  background: #4a1f1b;
+  border-color: var(--red);
+}
+
+.lab select,
+.lab textarea {
+  background: var(--field);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.lab select {
+  padding: 4px;
+}
+
+.lab textarea {
+  width: 100%;
+  height: 58px;
+  margin-top: 6px;
+  padding: 7px 8px;
+  resize: vertical;
+}
+
+.lab label.opt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #cfd8d2;
+  cursor: pointer;
+}
+
+.lab .note {
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.lab .lesson {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  line-height: 1.55;
+}
+
+.lab .lesson li {
+  margin: 3px 0;
+}
+
+.lab .lesson .d {
+  color: var(--cyan);
+}
+
+.lab .utt {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 96px;
+  overflow: auto;
+}
+
+.lab .raw {
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  max-height: 130px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.lab table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.lab th,
+.lab td {
+  padding: 3px 4px;
+  border-bottom: 1px solid #1f2a26;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.lab th {
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.lab th.l,
+.lab td.l {
+  text-align: left;
+}
+
+.lab td.say {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #cfd8d2;
+}
+
+.lab .scroll {
+  overflow-x: auto;
+}
+
+/* 좁은 화면(세로 아이패드 등)에서는 편집기 아래로 내린다 */
+@media (max-width: 980px) {
+  .lab {
+    width: auto;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  .lab .panel {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}

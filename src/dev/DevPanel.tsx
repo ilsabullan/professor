@@ -21,7 +21,8 @@ export function DevPanel({
   onLesson,
 }: {
   pipeline: Pipeline
-  board: TestBoardController
+  /** 테스트 보드가 있을 때만 예시 그림·가리키기를 그린다 (PDF 편집기에서는 대본만 보여 준다) */
+  board?: TestBoardController
   lesson: Lesson
   onLesson: (l: Lesson) => void
 }) {
@@ -45,7 +46,7 @@ export function DevPanel({
   return (
     <aside className="panel">
       <section>
-        <h2>가상 교안 (PDF 페이지라고 가정)</h2>
+        <h2>{board ? '가상 교안 (PDF 페이지라고 가정)' : '대본 (PDF 위에서 이대로 쓰고 말해 보기)'}</h2>
         <div className="row">
           <select
             value={lesson.id}
@@ -60,14 +61,16 @@ export function DevPanel({
               </option>
             ))}
           </select>
-          {lesson.example && (
+          {board && lesson.example && (
             <button className="btn sm" onClick={() => void drawExample(board, lesson.id)}>
               ✏️ 예시 그림
             </button>
           )}
-          <button className="btn sm" onClick={() => examplePointing(board, 330, 300, 950, 300)}>
-            👉 예시 가리키기
-          </button>
+          {board && (
+            <button className="btn sm" onClick={() => examplePointing(board, 330, 300, 950, 300)}>
+              👉 예시 가리키기
+            </button>
+          )}
         </div>
         <ol className="lesson">
           {lesson.steps.map(([d, t], i) => (

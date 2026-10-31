@@ -1,6 +1,8 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { Pipeline } from './pipeline'
 
+const MAX_PIXELS = 8_000_000
+
 /**
  * 필기 캔버스 위에 겹치는 투명 애니메이션 레이어.
  * 부모가 필기 캔버스와 같은 크기·위치로 놓아 주면 된다 (페이지 좌표 → 화면 크기로 자동 맞춤).
@@ -20,7 +22,8 @@ export function AnimationOverlay({ pipeline }: { pipeline: Pipeline }) {
       last = now
       pipeline.tick(now, dt)
       const r = cv.getBoundingClientRect()
-      const d = window.devicePixelRatio || 1
+      // 많이 확대하면 캔버스가 너무 커져 아이패드 사파리에서 그려지지 않으므로 픽셀 수를 제한한다
+      const d = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_PIXELS / Math.max(1, r.width * r.height)))
       const w = Math.max(1, Math.round(r.width * d))
       const h = Math.max(1, Math.round(r.height * d))
       if (cv.width !== w || cv.height !== h) {

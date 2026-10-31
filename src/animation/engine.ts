@@ -62,6 +62,18 @@ interface Tween {
 const INK = '#eef0e6'
 const FONT = "'Nanum Pen Script', cursive"
 
+/** 흰 종이(PDF) 위에서도 보이도록 칠판용 밝은 색을 같은 계열의 진한 색으로 바꾼다 */
+const PAPER: Record<string, string> = {
+  '#eef0e6': '#1f1f1f',
+  '#cdf0ff': '#1e88e5',
+  '#ffc65a': '#d98200',
+  '#5ec8e6': '#0288d1',
+  '#7be596': '#2e9d4f',
+  '#93a39b': '#6b7280',
+  '#6ea8ff': '#1e5eff',
+  '#ff5a46': '#e53935',
+}
+
 /**
  * 칠판 위 애니메이션 상태와 그리기.
  * 그린 객체(o…)를 움직이거나 색을 바꾸면 편집기에 원래 필기를 숨겨 달라고 요청하고, 여기서 대신 그린다.
@@ -70,6 +82,8 @@ export class Engine {
   anim: Record<string, AnimState> = {}
   spawned: Record<string, Spawned> = {}
   flows: Flow[] = []
+  /** 흰 종이 위에 그릴 때 true (PDF 편집기). 어두운 칠판이면 false */
+  paper = false
   private tweens: Tween[] = []
   private takenOver = new Set<string>()
   /** 지금 단계가 시작될 때의 위치 (한 단계 안의 move는 모두 이 기준으로 동시에 움직인다) */
@@ -367,6 +381,10 @@ export class Engine {
     }
   }
 
+  private col(color: string) {
+    return this.paper ? (PAPER[color.toLowerCase()] ?? color) : color
+  }
+
   /** 페이지 좌표로 그린다 (ctx에 scale이 이미 적용돼 있어야 함) */
   render(c: CanvasRenderingContext2D) {
     for (const id of this.takenOver) {
@@ -378,7 +396,7 @@ export class Engine {
       if (!a.labelText || this.spawned[id]) continue
       const o = this.board.get(id)
       if (!o) continue
-      c.fillStyle = '#ffc65a'
+      c.fillStyle = this.col('#ffc65a')
       c.font = `22px ${FONT}`
       c.textAlign = 'center'
       c.fillText(a.labelText, o.bbox.x + o.bbox.w / 2 + a.dx, o.bbox.y + a.dy - 10)
@@ -391,7 +409,7 @@ export class Engine {
         let fr = (((f.phase + k / f.n) % 1) + 1) % 1
         if (f.rev) fr = 1 - fr
         const q = pointOnPath(p, fr)
-        c.fillStyle = f.color
+        c.fillStyle = this.col(f.color)
         c.beginPath()
         c.arc(q.x, q.y, 5, 0, Math.PI * 2)
         c.fill()
@@ -404,11 +422,11 @@ export class Engine {
       c.translate(s.x, s.y)
       c.scale(a?.sc ?? 1, a?.sc ?? 1)
       if (a && a.pulse > 0) {
-        c.shadowColor = s.color
+        c.shadowColor = this.col(s.color)
         c.shadowBlur = 24 * a.pulse
       }
-      c.fillStyle = s.color
-      c.strokeStyle = s.color
+      c.fillStyle = this.col(s.color)
+      c.strokeStyle = this.col(s.color)
       c.lineWidth = 3
       if (s.shape === 'dot') {
         c.beginPath()
@@ -428,7 +446,7 @@ export class Engine {
       }
       c.restore()
       if (a?.labelText) {
-        c.fillStyle = '#ffc65a'
+        c.fillStyle = this.col('#ffc65a')
         c.font = `22px ${FONT}`
         c.textAlign = 'center'
         c.fillText(a.labelText, s.x, s.y - s.r - 14)
@@ -445,9 +463,9 @@ export class Engine {
     c.translate(cc.x + a.dx, cc.y + a.dy)
     c.scale(a.sc, a.sc)
     c.translate(-cc.x, -cc.y)
-    const ink = a.color ?? INK
+    const ink = this.col(a.color ?? INK)
     if (a.pulse > 0) {
-      c.shadowColor = a.color ?? '#5ec8e6'
+      c.shadowColor = this.col(a.color ?? '#5ec8e6')
       c.shadowBlur = 26 * a.pulse
     }
     c.strokeStyle = ink

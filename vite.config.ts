@@ -127,6 +127,8 @@ export default defineConfig(({ mode }) => {
     server: {
       // 같은 와이파이의 다른 기기에서 접속 가능. 마이크·음성 인식 때문에 HTTPS(자체 인증서)
       host: true,
+      // cloudflared 임시 터널(*.trycloudflare.com)로 공유할 때 접속을 허용한다
+      allowedHosts: ['.trycloudflare.com'],
       proxy: {
         '/api/anthropic': {
           target: 'https://api.anthropic.com',
