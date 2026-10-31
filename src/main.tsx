@@ -5,6 +5,7 @@ import { Pipeline } from "./animation/pipeline";
 import { InkBus } from "./shared/bus";
 import { LESSONS } from "./dev/lessons";
 import { logEntry, startTestLog } from "./dev/testlog";
+import { AudioLog } from "./dev/audiolog";
 import { laserLog, onLaserEnd, onStrokeEnd } from "./lib/events";
 import "./styles.css";
 
@@ -17,6 +18,9 @@ pipeline.engine.paper = true; // PDF(흰 종이) 위에 그린다
 if (import.meta.env.DEV) {
   pipeline.log = logEntry;
   startTestLog();
+  // 음성 인식기 비교용 원본 녹음: 마이크를 켠 동안만
+  const audio = new AudioLog(logEntry);
+  pipeline.subscribe(() => audio.sync(pipeline.mic === "on"));
   Object.assign(window, { __pipeline: pipeline, __bus: bus, __dev: { LESSONS }, ink: { onStrokeEnd, onLaserEnd, laserLog } });
 }
 

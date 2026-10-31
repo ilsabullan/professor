@@ -1,12 +1,11 @@
-import { randomBytes } from 'node:crypto'
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { getDevAccessCode, isDirectLocal } from './server/accessCode.ts'
+import { resolve } from 'node:path'
+import { createLogStore } from './server/logStore.ts'
 import { networkInterfaces } from 'node:os'
-import { defineConfig, loadEnv, type Plugin } from 'vite'
+import type { ClientRequest, IncomingMessage } from 'node:http'
+import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import basicSsl from '@vitejs/plugin-basic-ssl'
-
-const isLocal = (ip: string) => ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
 
 function lanAddresses() {
   return Object.values(networkInterfaces())
@@ -15,9 +14,55 @@ function lanAddresses() {
     .map((n) => n!.address)
 }
 
+/** 이 Mac 자신이거나 접속 코드 쿠키가 있는 요청 */
+function hasAccess(req: IncomingMessage, code: string) {
+  const cookie = /(?:^|;\s*)lb_code=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+  return isDirectLocal(req.socket.remoteAddress, req.headers) || cookie === code
+}
+
+/**
+ * 실시간 받아쓰기 WebSocket 프록시. 브라우저는 /api/stt/<업체>로 연결하고 서버가 키를 붙여 넘긴다.
+ * WebSocket 업그레이드는 미들웨어를 거치지 않으므로 접속 코드는 bypass에서 따로 확인한다.
+ */
+function sttProxy(code: string, env: Record<string, string>): Record<string, ProxyOptions> {
+  const guard = (req: IncomingMessage) => (hasAccess(req, code) ? undefined : false)
+  const strip = (proxyReq: ClientRequest) => {
+    proxyReq.removeHeader('origin')
+    proxyReq.removeHeader('cookie')
+  }
+  return {
+    '/api/stt/openai': {
+      target: 'wss://api.openai.com',
+      ws: true,
+      changeOrigin: true,
+      bypass: guard,
+      rewrite: () => '/v1/realtime?intent=transcription',
+      configure: (proxy) => {
+        proxy.on('proxyReqWs', (proxyReq) => {
+          strip(proxyReq)
+          proxyReq.setHeader('authorization', `Bearer ${env.OPENAI_API_KEY ?? ''}`)
+        })
+      },
+    },
+    '/api/stt/gemini': {
+      target: 'wss://generativelanguage.googleapis.com',
+      ws: true,
+      changeOrigin: true,
+      bypass: guard,
+      rewrite: () => '/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent',
+      configure: (proxy) => {
+        proxy.on('proxyReqWs', (proxyReq) => {
+          strip(proxyReq)
+          proxyReq.setHeader('x-goog-api-key', env.GEMINI_API_KEY ?? '')
+        })
+      },
+    },
+  }
+}
+
 /**
  * 내부망에 열 때 API 키를 지키는 접속 코드.
- * 서버를 켤 때마다 새 코드를 만들고, ?k=코드 로 한 번 연 기기에만 쿠키를 준다.
+ * 프로세스 시작 시 코드를 만들고(설정 자동 재시작에는 유지), ?k=코드 로 한 번 연 기기에만 쿠키를 준다.
  * /api/* (Anthropic 프록시 포함)는 이 Mac 자신이거나 쿠키가 있어야 쓸 수 있다.
  */
 function accessCode(code: string): Plugin {
@@ -31,8 +76,7 @@ function accessCode(code: string): Plugin {
           return next()
         }
         if (!url.pathname.startsWith('/api/')) return next()
-        const cookie = /(?:^|;\s*)lb_code=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
-        if (isLocal(req.socket.remoteAddress ?? '') || cookie === code) return next()
+        if (hasAccess(req, code)) return next()
         res.statusCode = 403
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ error: 'access_code_required' }))
@@ -52,7 +96,7 @@ function accessCode(code: string): Plugin {
  * imageB64 필드는 logs/<세션>/<종류>-<번호>.jpg 파일로 빼고 경로만 남긴다.
  */
 function testLog(): Plugin {
-  const dir = resolve('logs')
+  const store = createLogStore(resolve('logs'))
   return {
     name: 'test-log',
     configureServer(server) {
@@ -70,23 +114,9 @@ function testLog(): Plugin {
         })
         req.on('end', () => {
           try {
-            const { session, entries } = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-              session: string
-              entries: Record<string, unknown>[]
-            }
-            if (!/^[\w-]{6,64}$/.test(session) || !Array.isArray(entries)) throw new Error('bad payload')
-            mkdirSync(join(dir, session), { recursive: true })
-            const lines = entries.map((e) => {
-              if (typeof e.imageB64 === 'string') {
-                const name = `${String(e.type)}-${String(e.n)}.jpg`
-                writeFileSync(join(dir, session, name), Buffer.from(e.imageB64, 'base64'))
-                delete e.imageB64
-                e.imageFile = `logs/${session}/${name}`
-              }
-              return JSON.stringify(e)
-            })
-            appendFileSync(join(dir, `${session}.jsonl`), lines.join('\n') + '\n')
-            res.end('ok')
+            const result = store(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify(result))
           } catch (err) {
             res.statusCode = 400
             res.end(String(err))
@@ -118,7 +148,7 @@ export default defineConfig(({ mode }) => {
   // 세 번째 인자 '' = VITE_ 접두사 없는 변수도 읽음 (서버 쪽에서만 사용)
   const env = loadEnv(mode, process.cwd(), '')
   const key = env.ANTHROPIC_API_KEY ?? ''
-  const code = randomBytes(4).toString('hex')
+  const code = getDevAccessCode(env)
   // DEV_HTTP=1 이면 HTTPS 없이 (이 Mac에서 http://localhost 로만 확인할 때)
   const https = process.env.DEV_HTTP !== '1'
   return {
@@ -127,9 +157,10 @@ export default defineConfig(({ mode }) => {
     server: {
       // 같은 와이파이의 다른 기기에서 접속 가능. 마이크·음성 인식 때문에 HTTPS(자체 인증서)
       host: true,
-      // cloudflared 임시 터널(*.trycloudflare.com)로 공유할 때 접속을 허용한다
+      // Cloudflare 임시 터널로 iPad 등에서 열 때. /api/* 는 접속 코드가 지킨다
       allowedHosts: ['.trycloudflare.com'],
       proxy: {
+        ...sttProxy(code, env),
         '/api/anthropic': {
           target: 'https://api.anthropic.com',
           changeOrigin: true,

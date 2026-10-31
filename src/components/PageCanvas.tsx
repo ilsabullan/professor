@@ -77,6 +77,8 @@ export function PageCanvas(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const gesture = useRef<Gesture | null>(null);
+  // 마지막으로 받은 포인터 시각. iPad Safari는 이미 보낸 coalesced 점을 다시 돌려준다
+  const lastStamp = useRef(0);
   const dirty = useRef(true);
   const [laser] = useState(() => new Laser());
   const bgDrawn = useRef(false);
@@ -283,6 +285,7 @@ export function PageCanvas(props: Props) {
     if (ev.pointerType === "touch" || gesture.current) return;
     if (ev.pointerType === "mouse" && ev.button !== 0) return;
     e.currentTarget.setPointerCapture(ev.pointerId);
+    lastStamp.current = ev.timeStamp || 0;
 
     const p = toPoint(ev);
     const { tool, color, strokeWidth, straightHighlight, onEraseStart } = latest.current;
@@ -309,7 +312,10 @@ export function PageCanvas(props: Props) {
     const ev = e.nativeEvent;
     if (!g || g.pointerId !== ev.pointerId) return;
     const coalesced = ev.getCoalescedEvents?.();
-    for (const ce of coalesced?.length ? coalesced : [ev]) {
+    const list = coalesced?.length ? coalesced : [ev];
+    const fresh = list.filter((v) => !v.timeStamp || v.timeStamp > lastStamp.current);
+    for (const v of fresh) lastStamp.current = Math.max(lastStamp.current, v.timeStamp || 0);
+    for (const ce of fresh) {
       const p = toPoint(ce);
       if (g.kind === "ink" && g.straight) {
         g.stroke.points = straightLine(g.stroke.points[0], p, latest.current.cssWidth, pageHeight());

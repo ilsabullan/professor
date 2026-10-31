@@ -11,6 +11,15 @@ export interface ReqRecord {
   tSend?: number
   tFirst?: number
   tFirstOp?: number
+  tFirstMove?: number
+  actionId?: string
+  rejected?: number
+  /** 성공·오류·중단을 포함한 요청 종료 시각 */
+  tEnd?: number
+  /** 요청 시작 시점의 전체 설정 */
+  settings?: Record<string, unknown>
+  /** API가 반환한 실제 모델 */
+  model?: string
   tDone?: number
   status: string
   cap: string
@@ -41,6 +50,11 @@ export interface Summary {
   cfg: string
   count: number
   played: number
+  aborted: number
+  errors: number
+  noMovement: number
+  pending: number
+  held: number
   p50: number | null
   p90: number | null
   under1s: number | null
@@ -65,6 +79,11 @@ export function summarize(reqs: ReqRecord[]): Summary[] {
       cfg,
       count: g.length,
       played: lat.length,
+      aborted: g.filter((r) => r.status.startsWith('중단')).length,
+      errors: g.filter((r) => r.status.startsWith('오류') || r.status === '형식 오류').length,
+      noMovement: g.filter((r) => r.status === '새 움직임 없음').length,
+      pending: g.filter((r) => r.status === '진행 중').length,
+      held: g.filter((r) => r.status.startsWith('확신 낮음') || r.status.startsWith('보류')).length,
       p50: pct(lat, 0.5),
       p90: pct(lat, 0.9),
       under1s: lat.length ? lat.filter((v) => v <= 1000).length / lat.length : null,
@@ -75,7 +94,7 @@ export function summarize(reqs: ReqRecord[]): Summary[] {
 
 export function toCsv(reqs: ReqRecord[]): string {
   const sec = (a?: number, b?: number) => (a != null && b != null ? ((a - b) / 1000).toFixed(3) : '')
-  const head = '번호,설정,계기,즉시반응ms,전송s,첫토큰s,첫동작s,체감지연s,이미지,상태,확신,캐시읽음,입력토큰,출력토큰,자막,내용'
+  const head = '번호,설정,계기,즉시반응ms,전송s,첫토큰s,첫동작s,체감지연s,이미지,상태,확신,캐시읽음,입력토큰,출력토큰,자막,내용,종료s,피드백,실제모델,전체설정,첫이동s,실행단위,거부횟수'
   const rows = reqs.map((r) => {
     const lat = latency(r)
     return [
@@ -95,6 +114,13 @@ export function toCsv(reqs: ReqRecord[]): string {
       r.outputTokens ?? '',
       r.cap,
       r.desc,
+      sec(r.tEnd, r.t0),
+      r.feedback ?? '',
+      r.model ?? '',
+      r.settings ? JSON.stringify(r.settings) : '',
+      sec(r.tFirstMove, r.t0),
+      r.actionId ?? '',
+      r.rejected ?? '',
     ]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(',')

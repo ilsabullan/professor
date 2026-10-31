@@ -90,6 +90,14 @@ describe('Board', () => {
     expect(b.objs.find((o) => o.kind === 'line')?.arrowEnd).toBeUndefined()
   })
 
+  it('이미 쓴 숫자 위에 다시 덧쓴 획은 새 숫자가 아니라 같은 글자다 (실측: 3이 두 개가 됨)', () => {
+    const b = new Board()
+    stroke(b, five(300, 300))
+    clock += 5000
+    stroke(b, five(304, 303))
+    expect(b.objs.filter((o) => o.kind === 'mark')).toHaveLength(1)
+  })
+
   it('선 끝의 V자는 화살표 머리', () => {
     const b = new Board()
     stroke(b, seg(100, 300, 400, 300))

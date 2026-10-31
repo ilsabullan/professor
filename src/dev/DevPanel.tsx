@@ -139,13 +139,32 @@ export function DevPanel({
               <option value="adaptive">켬 (low)</option>
             </select>
           </label>
+          <label className="opt">
+            받아쓰기
+            <select value={s.stt} onChange={(e) => p.update({ stt: e.target.value as typeof s.stt })}>
+              <option value="browser">브라우저 내장</option>
+              <option value="openai">OpenAI 실시간</option>
+              <option value="gemini">Gemini Live</option>
+            </select>
+          </label>
+          <label className="opt" title="AI가 낸 동작을 코드가 막는 정도">
+            막는 규칙
+            <select value={s.gate} onChange={(e) => p.update({ gate: e.target.value as typeof s.gate })}>
+              <option value="strict">엄격 (지금)</option>
+              <option value="words">단어 목록 끔</option>
+              <option value="minimal">최소 (숫자 규칙만)</option>
+            </select>
+          </label>
         </div>
         <div className="row">
           <label className="opt">
             <input type="checkbox" checked={s.quick} onChange={(e) => p.update({ quick: e.target.checked })} /> 즉시 반응
           </label>
           <label className="opt">
-            <input type="checkbox" checked={s.early} onChange={(e) => p.update({ early: e.target.checked })} /> 말 끝나기 전 미리 부르기
+            <input type="checkbox" checked={s.early} onChange={(e) => p.update({ early: e.target.checked })} /> 말 멈추면 바로 확정
+          </label>
+          <label className="opt">
+            <input type="checkbox" checked={s.scene} onChange={(e) => p.update({ scene: e.target.checked })} /> 장면 해석
           </label>
           <label className="opt">
             필기 이미지
@@ -171,6 +190,7 @@ export function DevPanel({
       <section>
         <h2>AI가 지금 한 일</h2>
         <div className="note">{p.aiNote}</div>
+        {s.scene && <div className="note">장면 해석: {sceneNote(p.scene.status)}</div>}
         {p.quickLog.length > 0 && (
           <div className="utt">
             {p.quickLog.map((q, i) => (
@@ -185,6 +205,7 @@ export function DevPanel({
 
       <section>
         <h2>측정 요약 (행동 → AI 첫 동작)</h2>
+        <div className="note">중앙값·90%·1초 이내는 첫 동작이 관측된 요청만 기준입니다. 미확정 발화 요청은 제외하며, 무반응은 의도된 결과일 수도 있습니다. 음성 기준 시각은 인식 결과로 추정합니다.</div>
         {summary.length === 0 ? (
           <div className="note">기록이 없어요. 그리거나 말하면 쌓여요.</div>
         ) : (
@@ -192,10 +213,10 @@ export function DevPanel({
             <thead>
               <tr>
                 <th className="l">설정</th>
-                <th>요청</th>
+                <th>반응/전체</th>
                 <th>중앙값</th>
                 <th>90%</th>
-                <th>1초 이내</th>
+                <th>반응 중 1초</th>
                 <th>즉시</th>
               </tr>
             </thead>
@@ -215,6 +236,11 @@ export function DevPanel({
             </tbody>
           </table>
         )}
+        {summary.map((g) => (
+          <div className="note" key={g.cfg}>
+            {g.cfg}: 중단 {g.aborted} · 오류 {g.errors} · 무반응 {g.noMovement} · 보류 {g.held} · 진행 중 {g.pending}
+          </div>
+        ))}
         <div className="row">
           <button
             className="btn sm"
@@ -285,4 +311,11 @@ export function DevPanel({
       </section>
     </aside>
   )
+}
+
+function sceneNote(st: Pipeline['scene']['status']) {
+  const now = st.state === 'running' ? '해석 중 · ' : st.state === 'waiting' ? '대기 · ' : ''
+  const l = st.last
+  if (!l) return now + '아직 없음'
+  return `${now}마지막 ${l.ms}ms · ${l.discarded ?? `객체 ${l.objs}개${l.merged ? ` · 묶음 ${l.merged}` : ''}${l.split ? ` · 나눔 ${l.split}` : ''}`}`
 }

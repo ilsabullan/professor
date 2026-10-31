@@ -1,9 +1,9 @@
-import { type Board, KIND_KO } from '../board'
+import { type Board, type BoardObj, KIND_KO, ROLE_KO } from '../board'
 import type { Engine } from '../engine'
 
 /** 바뀌지 않는 시스템 프롬프트. 캐시되므로 요청마다 바꾸지 않는다 */
 export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 엔진이다. 교수자가 강의 자료(PDF) 위에 필기하며 설명한다. 그린 것과 방금 한 말을 보고, 지금 설명하는 '시간에 따라 변하는 과정'을 칠판 위 애니메이션으로 이어서 보여줄 단계 대본을 만든다.
-속도가 가장 중요하다. 고민하지 말고 바로 첫 줄부터 출력한다. 짧게 쓴다.
+현재 설명의 대상과 결과를 정확히 맞춘다. 짧게 쓰고 한 단계를 완성된 JSON 한 줄로 출력한다.
 
 출력 형식: 한 줄에 JSON 객체 하나(NDJSON). 코드블록·설명 금지. 키 순서를 지킨다.
 - 단계 한 줄: {"ops":[연산,...],"cap":"학생용 자막(20자 이내)"}
@@ -16,9 +16,10 @@ export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 �
 
 연산(한 단계의 연산은 동시에, 단계는 순서대로 실행):
  {"v":"flow","along":"선id","n":1~20,"speed":0.3~3,"color":"색","rev":false}  선을 따라 입자가 계속 흐름(stop 전까지). rev=true면 그린 방향의 반대로
- {"v":"stop","along":"선id"}
+ {"v":"stop","along":"선id"} 또는 {"v":"stop","id":"객체id"}  흐름이나 계속 도는 이동을 멈춤
  {"v":"spawn","id":"p로 시작하는 새 id","shape":"dot|circle|box|label","at":[x,y] 또는 "on":"객체id","text":"label 글자","color":"색","r":반지름,"w":폭,"h":높이}
- {"v":"move","id":"객체id","to":[x,y] 또는 "to":"객체id"(그 객체가 있는 자리) 또는 "along":"선id","dur":ms}  자리 이동은 이것 하나로
+ {"v":"move","id":"객체id","to":[x,y](객체 중심이 갈 자리) 또는 "to":"객체id"(그 객체가 있는 자리) 또는 "along":"선id" 또는 "by":[dx,dy](지금 자리에서 이만큼 밀기),"dur":ms}  자리 이동은 이것 하나로. "along"과 함께 "loop":true면 stop 전까지 그 경로를 계속 돈다(닫힌 경로는 회전, 열린 경로는 왕복)
+ {"v":"spawn","id":"p…","shape":"arrow","from":"객체id"또는[x,y],"to":"객체id"또는[x,y],"text":"이름","color":"색"}  그리지 않은 관계·이동을 화살표로 보충. 만든 화살표는 flow·move의 along으로 쓸 수 있다
  {"v":"color","id":"id","color":"색"}
  {"v":"scale","id":"id","k":배율,"dur":ms}
  {"v":"pulse","id":"id"}
@@ -37,11 +38,18 @@ export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 �
 - flow(입자 흐름)는 무언가가 경로를 따라 이동·전송·순환하는 설명일 때만 쓴다. 교수자가 흐름·이동·전송을 말했거나 화살표를 그렸을 때다. 선이 있다고 흐름이 아니다(칸 구분선·밑줄·도형 테두리일 수 있다).
 - 손글씨 값(숫자 등)의 순서·위치 판단은 '읽은 손글씨 (왼쪽→오른쪽)'을 기준으로 한다.
 - 값의 비교는 pulse·color로, 자리 이동은 move로 보여준다.
+- 그래프·도형의 평행이동("오른쪽으로 2만큼 옮기면", "x축 방향으로 이동")은 그 그래프 객체를 by로 민다. x축 방향이면 dy=0, y축 방향이면 dx=0. by·좌표는 모두 화면 픽셀이다. 수식의 '2만큼'을 2px로 쓰지 않는다. 이동량을 화살표로 그렸으면 그 화살표의 시작→끝 가로(세로) 픽셀 변위를 쓰고, 없으면 그래프 폭의 1/4쯤 민다. 화면 방향: 오른쪽 +dx, 왼쪽 -dx, 위 -dy, 아래 +dy. y=(x-2)²처럼 식의 x에서 빼는 것은 오른쪽(+dx) 이동이다. 이동량을 표시한 화살표·축은 움직이지 않는다. 자기 자신을 along으로 쓰지 않는다. to:"축id"로 축 위치에 갖다 놓지 않는다.
 - move의 출발·도착 위치는 모두 '그 단계가 시작될 때'의 위치다. 같은 단계의 move는 동시에 움직인다. 그래서 두 값의 교환은 한 단계에 move 두 개를 쓴다: {"v":"move","id":"o7","to":"o8"},{"v":"move","id":"o8","to":"o7"}. 셋 이상 돌리는 것도 같은 방식.
 - 도착한 자리에 다른 객체가 있어도 엔진은 아무것도 하지 않는다. 겹치지 않게 필요한 move를 모두 직접 쓴다. '겹침'이 보이면 바로잡는다.
 - 움직임은 교수자가 그 결과를 말했을 때만 쓴다: "바뀐다/교환한다/뒤로(앞으로) 간다/옮긴다". 이때는 비교만 보여주고 끝내지 않는다.
 - "비교해 보자/뭐가 더 클까/~를 비교한다/정렬해 보자/정렬한다(시작)"는 아직 결과가 아니다. 해당 값을 pulse·color로 강조만 하고 move하지 않는다. 다음에 무엇이 될지 앞질러 보여주지 않는다.
 - '지금 말하는 중'은 끝나지 않은 문장이다. 그 안에서 결과가 분명히 말해진 만큼만 반영한다.
+- 말하는 중에는 pulse/color로만 미리 강조한다. move 등 상태 변경은 확정 발화에만 출력한다. 단 '이번 입력의 실행 범위'가 허용하면 그것을 따른다.
+- 공전·자전·순환처럼 계속 도는 운동은 그 궤도 선을 along으로 loop:true. 궤도가 안 그려졌으면 spawn arrow로 경로를 만들지 않고 강조만 한다.
+- 넣기·쌓기(스택 push, 큐 enqueue)는 그 값을 통·상자 안의 빈 자리 좌표로 move한다. 먼저 넣은 것 위(또는 뒤)에 쌓이게 좌표를 계산한다. 꺼내기(pop)는 맨 위 값을 통 밖으로 move한다.
+- '이번 입력의 실행 범위'와 특정된 대상이 있으면 반드시 따른다. '둘'은 현재 비교 대상으로 특정된 두 객체다. 직전의 다른 비교 대상을 다시 쓰지 않는다.
+- 밑줄/강조 표시는 손글씨 값이 아니다. read에 넣거나 배열 원소로 이동하지 않는다.
+- JSON이 끊기면 동작은 실행되지 않는다. 교환 move 둘을 반드시 한 줄의 ops 배열 안에 함께 넣는다.
 - 강의 내용과 관계없는 말(잡담·혼잣말·주변 대화·질문 되묻기)이면 {"none":true}.
 - 정렬이 "완성된다/끝난다"고 하면 '읽음' 값을 실제로 정렬해 남은 교환을 한 단계씩 move로 보여주고, 마지막에는 완전히 정렬된 상태여야 한다.
 
@@ -72,32 +80,49 @@ function nowBox(board: Board, engine: Engine, id: string) {
   return { x: o.bbox.x + off.x, y: o.bbox.y + off.y, w: o.bbox.w, h: o.bbox.h }
 }
 
+/** 장면 해석이 정한 의미 (있을 때만) */
+function sceneTag(o: BoardObj) {
+  if (!o.role && !o.label) return ''
+  const link = o.from || o.to ? ` ${o.from ?? '?'}→${o.to ?? '?'}` : ''
+  return ` [${o.role ? ROLE_KO[o.role] : ''}${o.label ? (o.role ? ': ' : '') + o.label : ''}${link}]`
+}
+
 function describeObjs(board: Board, engine: Engine) {
-  const lines = board.objs.map((o) => {
-    const b = nowBox(board, engine, o.id)
-    const off = engine.offset(o.id)
-    const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
-    const rep = o.replaces ? ` [지운 ${o.replaces} 자리에 새로 씀]` : ''
-    if (o.kind === 'box') return `${o.id} 상자 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
-    if (o.kind === 'line' && o.pts) {
-      const under = board.underlineOf(o.id)
-      if (under) return `${o.id} 밑줄(${under} 아래, 강조 표시. 흐름 경로 아님)`
-      const p = o.pts
-      const m = p[Math.floor(p.length / 2)]
-      const head = o.arrowEnd ? `화살표(머리 ${o.arrowEnd === 'end' ? '끝점' : '시작점'} 쪽)` : '선'
-      return `${o.id} ${head} (${r(p[0].x)},${r(p[0].y)})→(${r(m.x)},${r(m.y)})→(${r(p[p.length - 1].x)},${r(p[p.length - 1].y)}) (그린 순서)`
-    }
-    if (o.kind === 'text') return `${o.id} 글자 "${o.text}" 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})${rep}${moved}`
-    if (o.kind === 'dot') return `${o.id} 콕 찍은 점 (${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})`
-    const read = o.read ? ` "${o.read}"(읽음)` : ' (아직 안 읽음)'
-    return `${o.id} 손글씨/기호${read} 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)}) x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
-  })
+  const lines = board.objs.map((o) => describeObj(board, engine, o) + sceneTag(o))
+  return describeList(board, engine, lines)
+}
+
+function describeObj(board: Board, engine: Engine, o: BoardObj) {
+  const b = nowBox(board, engine, o.id)
+  const off = engine.offset(o.id)
+  const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
+  const rep = o.replaces ? ` [지운 ${o.replaces} 자리에 새로 씀]` : ''
+  const under = board.underlineOf(o.id)
+  if (under) return `${o.id} 밑줄(${under} 아래 강조. 숫자/이동 대상/흐름 경로 아님)`
+  if (o.kind === 'box') return `${o.id} 상자 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+  if (o.kind === 'line' && o.pts) {
+    const under = board.underlineOf(o.id)
+    if (under) return `${o.id} 밑줄(${under} 아래, 강조 표시. 흐름 경로 아님)`
+    const p = o.pts
+    const m = p[Math.floor(p.length / 2)]
+    const head = o.arrowEnd ? `화살표(머리 ${o.arrowEnd === 'end' ? '끝점' : '시작점'} 쪽)` : '선'
+    return `${o.id} ${head} (${r(p[0].x)},${r(p[0].y)})→(${r(m.x)},${r(m.y)})→(${r(p[p.length - 1].x)},${r(p[p.length - 1].y)}) (그린 순서)`
+  }
+  if (o.kind === 'text') return `${o.id} 글자 "${o.text}" 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})${rep}${moved}`
+  if (o.kind === 'dot') return `${o.id} 콕 찍은 점 (${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})`
+  // 장면 해석이 값이 아니라고 정한 획 (그림 일부·잡획 등)
+  if (o.role && o.role !== 'value') return `${o.id} 그린 획 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+  const read = o.read ? ` "${o.read}"(읽음)` : ' (아직 안 읽음)'
+  return `${o.id} 손글씨/기호${read} 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)}) x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+}
+
+function describeList(board: Board, engine: Engine, lines: string[]) {
   // 읽은 값을 지금 위치의 왼쪽→오른쪽 순서로 (자리를 바꾼 뒤에도 실제 순서가 바로 보이게)
-  const readOrder = board.objs
-    .filter((o) => o.kind === 'mark' && o.read)
+  const readOrder = board.values()
+    .filter((o) => o.read || o.text)
     .map((o) => ({ o, x: nowBox(board, engine, o.id).x }))
     .sort((a, b) => a.x - b.x)
-    .map(({ o }) => `${o.read}(${o.id})`)
+    .map(({ o }) => `${o.read ?? o.text}(${o.id})`)
   const overlaps = engine.overlaps().map(([a, b]) => `${a}·${b}`)
   return [
     ...lines,

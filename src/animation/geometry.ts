@@ -47,6 +47,20 @@ export function simplify<T extends Pt>(pts: T[], n: number): Pt[] {
   return out
 }
 
+/**
+ * 방금 지난 점(최근 8개 중 0.5px 이내)으로 되돌아온 점을 뺀다.
+ * iPad Safari는 getCoalescedEvents()가 이미 보낸 점 묶음을 다시 돌려줘서, 곧은 선도 같은 구간을
+ * 오가며 경로 길이가 2~3배가 된다 (실측 iPad 세션 점의 54~72%). 다른 기기에서는 거의 없다.
+ */
+export function dropRevisits<T extends Pt>(pts: T[]): T[] {
+  const out: T[] = []
+  for (const p of pts) {
+    if (out.slice(-8).some((q) => Math.abs(p.x - q.x) < 0.5 && Math.abs(p.y - q.y) < 0.5)) continue
+    out.push(p)
+  }
+  return out
+}
+
 export function pathLen(p: Pt[]): number {
   let L = 0
   for (let i = 1; i < p.length; i++) L += dist(p[i - 1], p[i])

@@ -7,6 +7,7 @@ import {
   boxCenter,
   dist,
   distToSegment,
+  dropRevisits,
   expand,
   inBox,
   intersects,
@@ -41,6 +42,43 @@ export interface BoardObj {
   replaces?: string
   /** AI가 이미지로 한 번 읽은 손글씨 값 (한번 읽으면 기억해 다음부터 글자로 알려준다) */
   read?: string
+  /** 장면 해석(LLM)이 정한 의미. 있으면 기하 추정보다 우선한다 */
+  role?: SceneRole
+  /** 장면 해석이 붙인 이름 (예: "심장", "송신자") */
+  label?: string
+  /** 화살표·연결선이 잇는 객체, 밑줄이 꾸미는 객체 */
+  from?: string
+  to?: string
+}
+
+/** 장면 해석이 정하는 객체의 의미 */
+export type SceneRole = 'value' | 'box' | 'arrow' | 'connector' | 'frame' | 'underline' | 'drawing' | 'noise'
+
+export const ROLE_KO: Record<SceneRole, string> = {
+  value: '글자/값',
+  box: '도형/노드',
+  arrow: '화살표',
+  connector: '연결선',
+  frame: '칸/테두리',
+  underline: '밑줄',
+  drawing: '그림 일부',
+  noise: '잡획',
+}
+
+/** 장면 해석 결과 (scene.ts가 모델 응답을 이 모양으로 정리한다) */
+export interface SceneObj {
+  role?: SceneRole
+  read?: string
+  label?: string
+  head?: 'start' | 'end'
+  from?: string
+  to?: string
+}
+
+export interface SceneResult {
+  objs: Record<string, SceneObj>
+  merge: string[][]
+  split: Record<string, string[][]>
 }
 
 export interface ErasedObj {
@@ -80,6 +118,29 @@ export const KIND_KO: Record<ObjKind, string> = {
   text: '글자',
 }
 
+/**
+ * 사용자별 크기 보정. px 임계값은 글씨를 크게 쓰는 화면(손글씨 높이 약 150px)에서 정했다.
+ * 같은 페이지에서 쓴 손글씨 높이의 중앙값이 unit보다 작으면 임계값을 그 비율로 줄인다.
+ * 값은 cases/의 보정용(calib) 획 라벨로 고르고 검증용(holdout)으로 확인한다 (src/evals/strokes.test.ts).
+ */
+export interface BoardTuning {
+  /** 이 높이(px)의 손글씨를 쓰는 사람이 배율 1 */
+  unit: number
+  minScale: number
+  maxScale: number
+  /** 곧추선 획이 둘러싼 틀 높이의 이 비율 이상이면 칸 구분선 */
+  dividerSpan: number
+  /** 곧추선 획이 손글씨 높이 중앙값의 이 배수 이상이면 칸 구분선 */
+  dividerVsWriting: number
+}
+
+export const DEFAULT_TUNING: BoardTuning = { unit: 120, minScale: 0.4, maxScale: 1, dividerSpan: 0.8, dividerVsWriting: 1.6 }
+
+/** 곧게 선 세로 획 (칸 구분선 또는 숫자 1) */
+function upright(pts: Pt[], b: Box) {
+  return b.h > 2.5 * b.w && straightness(pts) >= 0.8
+}
+
 /** 상자 네 모서리 근처를 획이 지나가는지. 사각형은 4곳, 원·숫자 0은 0곳 */
 function cornersHit(pts: Pt[], b: Box) {
   const tol = 0.1 * Math.hypot(b.w, b.h)
@@ -104,23 +165,23 @@ function edgeShare(pts: Pt[], b: Box) {
  * 획 하나의 모양 판별.
  * 크기보다 "곧은가, 닫혔는가, 모서리가 있는가"를 본다. 크게 쓴 숫자도 구불구불하면 손글씨(mark).
  */
-export function classify(pts: Pt[]): Exclude<ObjKind, 'text'> {
+export function classify(pts: Pt[], s = 1): Exclude<ObjKind, 'text'> {
   const L = pathLen(pts)
   const b = bboxOf(pts)
   const diag = Math.hypot(b.w, b.h)
   const size = Math.max(b.w, b.h)
-  if (diag < 14) return 'dot'
+  if (diag < 14 * s) return 'dot'
   const gap = dist(pts[0], pts[pts.length - 1])
-  const closed = gap < Math.max(22, 0.28 * diag) && L > 1.9 * diag && b.w > 34 && b.h > 34
-  if (closed) return (cornersHit(pts, b) >= 3 && edgeShare(pts, b) >= 0.75) || size >= 220 ? 'box' : 'mark'
+  const closed = gap < Math.max(22 * s, 0.28 * diag) && L > 1.9 * diag && b.w > 34 * s && b.h > 34 * s
+  if (closed) return (cornersHit(pts, b) >= 3 && edgeShare(pts, b) >= 0.75) || size >= 220 * s ? 'box' : 'mark'
   if (straightness(pts) >= 0.8) {
     // 짧게 곧추선 획은 숫자 1 같은 글자 (긴 세로선은 칸 구분선 등으로 선)
-    if (b.h > 2.5 * b.w && b.h < 170) return 'mark'
-    return diag < 40 ? 'mark' : 'line'
+    if (b.h > 2.5 * b.w && b.h < 170 * s) return 'mark'
+    return diag < 40 * s ? 'mark' : 'line'
   }
   // 납작하고 넓은 획(살짝 흔들린 밑줄·가로선)은 선
-  if (b.w >= 40 && b.h < 0.25 * b.w) return 'line'
-  return size < 200 ? 'mark' : 'line'
+  if (b.w >= 40 * s && b.h < 0.25 * b.w) return 'line'
+  return size < 200 * s ? 'mark' : 'line'
 }
 
 /** V자 획이면 꼭짓점과 양 끝을 돌려준다 */
@@ -149,6 +210,13 @@ function vShape(pts: Pt[]) {
   return { tip, a, z }
 }
 
+/** a 넓이 중 b와 겹치는 비율 */
+function overlapShare(a: Box, b: Box) {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+  return w > 0 && h > 0 ? (w * h) / Math.max(1, a.w * a.h) : 0
+}
+
 const lastT = (pts: InkPoint[]) => pts[pts.length - 1]?.t ?? performance.now()
 
 /** 편집기에서 온 필기 이벤트를 객체와 사건으로 해석한다 */
@@ -158,8 +226,28 @@ export class Board {
   erased: ErasedObj[] = []
   traces: Trace[] = []
   events: BoardEvent[] = []
+  /** 필기가 바뀔 때마다 오른다. 늦게 도착한 장면 해석을 버릴 때 쓴다 */
+  version = 0
   private nextId = 1
   private nextTrace = 1
+
+  constructor(readonly tuning: BoardTuning = DEFAULT_TUNING) {}
+
+  /** 곧추선 획을 뺀 손글씨 객체 높이의 중앙값. 2개 미만이면 모름 */
+  private writingHeight() {
+    const hs = this.objs
+      .filter((o) => o.kind === 'mark' && !o.role && !(o.strokes.length === 1 && upright(o.strokes[0].pts, o.bbox)))
+      .map((o) => o.bbox.h)
+      .sort((a, b) => a - b)
+    return hs.length >= 2 ? hs[hs.length >> 1] : undefined
+  }
+
+  /** 이 사람의 손글씨 크기에 맞춘 임계값 배율 */
+  scale() {
+    const h = this.writingHeight()
+    const { unit, minScale, maxScale } = this.tuning
+    return h ? Math.min(maxScale, Math.max(minScale, h / unit)) : 1
+  }
 
   reset() {
     this.objs = []
@@ -177,19 +265,122 @@ export class Board {
   /** 손글씨·글자 바로 아래에 그은 짧은 가로선이면 그 대상 id (밑줄 = 강조, 흐름 아님) */
   underlineOf(id: string): string | undefined {
     const o = this.get(id)
-    if (!o || o.kind !== 'line' || o.arrowEnd) return undefined
+    if (o?.role) return o.role === 'underline' && o.to && this.get(o.to) ? o.to : undefined
+    if (!o || !['line', 'mark'].includes(o.kind) || o.arrowEnd) return undefined
     const b = o.bbox
-    if (b.w > 180 || b.h > b.w * 0.35) return undefined
+    // 짧거나 여러 번 덧그은 밑줄은 모양 분류에서 mark가 될 수 있다.
+    if (b.w < 18 || b.w > 180 || b.h > b.w * 0.45) return undefined
     return this.objs.find((m) => {
-      if (m.kind !== 'mark' && m.kind !== 'text') return false
+      if (m.id === id || (m.kind !== 'mark' && m.kind !== 'text') || (m.role && m.role !== 'value') || m.t > o.t) return false
+      if (m.bbox.h < Math.max(24, b.h * 2)) return false
       const bottom = m.bbox.y + m.bbox.h
       const overlap = Math.min(b.x + b.w, m.bbox.x + m.bbox.w) - Math.max(b.x, m.bbox.x)
-      return b.y > bottom - 20 && b.y < bottom + 50 && overlap > 0.4 * Math.min(b.w, m.bbox.w)
+      return b.y > bottom - Math.min(35, m.bbox.h * 0.25) && b.y < bottom + 50 && overlap > 0.3 * Math.min(b.w, m.bbox.w)
     })?.id
+  }
+
+  /** 숫자/글자 후보. 밑줄의 OCR 결과가 배열 원소에 섞이지 않게 모든 소비자가 공유한다. */
+  values() {
+    return this.objs.filter((o) => (o.role ? o.role === 'value' : o.kind === 'mark' || o.kind === 'text') && !this.underlineOf(o.id))
+  }
+
+  /** 흐름 경로: 화살표, 가리킨 궤적, 또는 서로 다른 객체를 잇는 열린 선. */
+  isFlowPath(id: string) {
+    if (this.traces.some((t) => t.id === id)) return true
+    const o = this.get(id)
+    if (!o || o.kind !== 'line' || !o.pts || this.underlineOf(id)) return false
+    if (o.role) return o.role === 'arrow' || o.role === 'connector'
+    if (o.arrowEnd) return true
+    const ends = [o.pts[0], o.pts[o.pts.length - 1]]
+    const near = ends.map((p) => this.objs
+      .filter((x) => x.id !== id && (x.kind === 'box' || x.kind === 'text' || x.role === 'value'))
+      .filter((x) => inBox(p, x.bbox, 35))
+      .sort((a, b) => area(a.bbox) - area(b.bbox))[0]?.id)
+    return !!near[0] && !!near[1] && near[0] !== near[1]
+  }
+
+  /**
+   * 장면 해석(LLM) 결과를 반영한다. 기하(좌표·획)는 그대로 두고 의미만 덮는다.
+   * keep: 애니메이션이 옮기고 있는 객체처럼 묶기·나누기를 하면 안 되는 id.
+   * 돌려주는 removed는 합쳐져 사라진 id (엔진에서 잊어야 함), added는 나눠져 새로 생긴 id.
+   */
+  applyScene(r: SceneResult, keep: (id: string) => boolean = () => false) {
+    const removed: string[] = []
+    const added: string[] = []
+    let changed = 0
+    for (const [id, groups] of Object.entries(r.split)) {
+      const o = this.get(id)
+      if (!o || o.kind === 'text' || keep(id) || groups.length < 2) continue
+      const byId = new Map(o.strokes.map((st) => [st.id, st]))
+      const parts = groups.map((g) => g.map((sid) => byId.get(sid)).filter((st): st is BoardStroke => !!st)).filter((g) => g.length)
+      // 모든 획을 정확히 한 번씩 나눈 경우만 받아들인다
+      if (parts.length < 2 || parts.flat().length !== o.strokes.length || new Set(parts.flat()).size !== o.strokes.length) continue
+      const at = this.objs.indexOf(o)
+      const made = parts.slice(1).map((strokes) => {
+        const n: BoardObj = { id: this.newId(), kind: 'mark', strokes, bbox: bboxOf(strokes.flatMap((st) => st.pts)), t: o.t }
+        added.push(n.id)
+        return n
+      })
+      o.strokes = parts[0]
+      o.bbox = bboxOf(o.strokes.flatMap((st) => st.pts))
+      delete o.read
+      if (o.kind === 'line') o.pts = simplify(o.strokes[0].pts, 24)
+      this.objs.splice(at + 1, 0, ...made)
+      changed++
+    }
+    // 나누기를 먼저. 같은 응답에서 나눈 객체를 다시 묶으라는 지시는 모순이므로 무시한다
+    for (const group of r.merge) {
+      if (group.some((id) => id in r.split)) continue
+      const objs = group.map((id) => this.get(id))
+      if (objs.length < 2 || objs.some((o) => !o || o.kind === 'text' || keep(o.id))) continue
+      // 서로 다른 값으로 읽힌 손글씨는 묶지 않는다 (실측: 밑줄을 긋자 "5"와 "3"을 한 객체로 합침)
+      const reads = new Set(objs.map((o) => o!.read ?? r.objs[o!.id]?.read).filter(Boolean))
+      if (reads.size >= 2) continue
+      const [head, ...rest] = objs as BoardObj[]
+      head.strokes = [...head.strokes, ...rest.flatMap((o) => o.strokes)]
+      head.bbox = bboxOf(head.strokes.flatMap((st) => st.pts))
+      head.t = Math.max(head.t, ...rest.map((o) => o.t))
+      delete head.read
+      this.objs = this.objs.filter((o) => !rest.includes(o))
+      removed.push(...rest.map((o) => o.id))
+      changed++
+    }
+    for (const [id, s] of Object.entries(r.objs)) {
+      const o = this.get(id)
+      if (!o || o.kind === 'text') continue
+      if (s.role) o.role = s.role
+      if (s.label) o.label = s.label
+      if (s.from && this.get(s.from)) o.from = s.from
+      if (s.to && this.get(s.to)) o.to = s.to
+      if (s.role === 'value') {
+        if (o.kind !== 'mark') { o.kind = 'mark'; delete o.pts; delete o.arrowEnd }
+        if (s.read) o.read = s.read
+      } else if (s.role === 'box') {
+        o.kind = 'box'
+        delete o.pts
+        delete o.read
+      } else if (s.role === 'arrow' || s.role === 'connector' || s.role === 'frame' || s.role === 'underline') {
+        if (o.kind !== 'line') {
+          const longest = [...o.strokes].sort((a, b) => pathLen(b.pts) - pathLen(a.pts))[0]
+          o.kind = 'line'
+          o.pts = simplify(longest.pts, 24)
+        }
+        delete o.read
+        if (s.role === 'arrow' && s.head) o.arrowEnd = s.head
+        if (s.role !== 'arrow') delete o.arrowEnd
+      } else if (s.role) {
+        delete o.read
+        delete o.arrowEnd
+      }
+      changed++
+    }
+    if (changed) this.version++
+    return { removed, added, changed }
   }
 
   /** 이벤트를 반영하고, AI를 부를 만한 사건이면 돌려준다 */
   apply(e: InkEvent): BoardEvent | null {
+    if (e.type !== 'point') this.version++
     let ev: BoardEvent | null = null
     switch (e.type) {
       case 'page':
@@ -200,7 +391,10 @@ export class Board {
         this.reset()
         return null
       case 'stroke':
-        if (e.stroke.points.length) ev = this.addStroke(e.stroke)
+        if (e.stroke.points.length) {
+          ev = this.addStroke(e.stroke)
+          this.promoteDividers()
+        }
         break
       case 'text':
         ev = this.addText(e.id, e.text, e.x, e.y, e.t)
@@ -224,9 +418,11 @@ export class Board {
   }
 
   private addStroke(s: InkStroke): BoardEvent {
-    const pts = s.points.length === 1 ? [s.points[0], { ...s.points[0], x: s.points[0].x + 1 }] : s.points
+    const raw = dropRevisits(s.points)
+    const pts = raw.length === 1 ? [raw[0], { ...raw[0], x: raw[0].x + 1 }] : raw
     const t = lastT(pts)
-    const kind = classify(pts)
+    const sc = this.scale()
+    const kind = classify(pts, sc)
     const b = bboxOf(pts)
     const diag = Math.hypot(b.w, b.h)
     const stroke: BoardStroke = { id: s.id, pts }
@@ -253,32 +449,31 @@ export class Board {
       }
     }
 
-    // ② 화살표 머리: 최근에 그린 선 끝에 V자 획, 꼭짓점이 선 끝을 향함
-    if (diag < 70) {
+    // ② 화살표 머리: 최근에 그린 선 끝에 V자 획, 꼭짓점이 선 끝을 향함.
+    // 실측에서 머리를 선 길이의 절반 가까이 크게 그리기도 한다 (TCP 실측 s38: 머리 대각선 161, 선 317)
+    if (diag < 200) {
       const v = vShape(pts)
-      if (v) {
-        const ln = [...this.objs]
-          .reverse()
-          .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000)
-        if (ln?.pts) {
-          const lp = ln.pts
-          for (const end of ['end', 'start'] as const) {
-            const tipEnd = end === 'end' ? lp[lp.length - 1] : lp[0]
-            const before = end === 'end' ? lp[Math.max(0, lp.length - 4)] : lp[Math.min(lp.length - 1, 3)]
-            const dx = tipEnd.x - before.x
-            const dy = tipEnd.y - before.y
-            const behind = (p: Pt) => (p.x - v.tip.x) * dx + (p.y - v.tip.y) * dy < 0
-            if (dist(v.tip, tipEnd) < 30 && behind(v.a) && behind(v.z)) {
-              ln.arrowEnd = end
-              ln.strokes.push(stroke)
-              ln.t = t
-              return {
-                kind: '화살표',
-                desc: `${ln.id} 선이 화살표가 됨 (머리: (${Math.round(tipEnd.x)},${Math.round(tipEnd.y)}) 쪽으로 이동·인과)`,
-                t,
-                objId: ln.id,
-                rev: end === 'start',
-              }
+      const ln = v && [...this.objs]
+        .reverse()
+        .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000)
+      if (v && ln?.pts && (diag < 70 || diag < 0.6 * pathLen(ln.pts))) {
+        const lp = ln.pts
+        for (const end of ['end', 'start'] as const) {
+          const tipEnd = end === 'end' ? lp[lp.length - 1] : lp[0]
+          const before = end === 'end' ? lp[Math.max(0, lp.length - 4)] : lp[Math.min(lp.length - 1, 3)]
+          const dx = tipEnd.x - before.x
+          const dy = tipEnd.y - before.y
+          const behind = (p: Pt) => (p.x - v.tip.x) * dx + (p.y - v.tip.y) * dy < 0
+          if (dist(v.tip, tipEnd) < Math.max(30, 0.35 * diag) && behind(v.a) && behind(v.z)) {
+            ln.arrowEnd = end
+            ln.strokes.push(stroke)
+            ln.t = t
+            return {
+              kind: '화살표',
+              desc: `${ln.id} 선이 화살표가 됨 (머리: (${Math.round(tipEnd.x)},${Math.round(tipEnd.y)}) 쪽으로 이동·인과)`,
+              t,
+              objId: ln.id,
+              rev: end === 'start',
             }
           }
         }
@@ -287,37 +482,86 @@ export class Board {
 
     // ③ 손글씨는 이어 쓴 가까운 획끼리 하나로 묶는다 (여러 획으로 쓴 숫자·글자)
     const last = this.objs[this.objs.length - 1]
-    if (last && kind !== 'box' && diag < 160 && t - last.t < 1200) {
+    if (last && kind !== 'box' && diag < 160 * sc && t - last.t < 1200) {
       const lastDiag = Math.hypot(last.bbox.w, last.bbox.h)
-      const joinable = last.kind === 'mark' || last.kind === 'dot' || (last.kind === 'line' && !last.arrowEnd && lastDiag < 120)
+      const joinable = last.kind === 'mark' || last.kind === 'dot' || (last.kind === 'line' && !last.arrowEnd && lastDiag < 120 * sc)
       const nb = unionBox(last.bbox, b)
-      if (joinable && intersects(expand(last.bbox, 30), b) && nb.w < 300 && nb.h < 220) {
+      // 큰 그림 옆에 쓴 작은 글자는 따로 둔다 (혈액순환 실측: 폐 윤곽 옆 "O2")
+      const tiny = lastDiag >= 150 * sc && diag < 0.35 * lastDiag && overlapShare(b, last.bbox) < 0.3
+      if (joinable && !tiny && intersects(expand(last.bbox, 30 * sc), b) && nb.w < 300 * sc && nb.h < 220 * sc) {
         last.kind = 'mark'
         delete last.pts
         last.strokes.push(stroke)
         last.bbox = nb
         last.t = t
+        delete last.read // 획이 바뀌면 이전 이미지의 판독값은 더 이상 확정값이 아니다
         return { kind: '획', desc: `손글씨 ${last.id}에 획 추가`, t, objId: last.id }
       }
     }
 
     // 곧추선 직선이 다른 선에 닿지 않고 떠 있으면 숫자 1 같은 글자 (구분선은 테두리에 닿아 있다)
-    const k = kind === 'line' && this.floatingUpright(pts, b) ? 'mark' : kind
+    const k = kind === 'line' && this.floatingUpright(pts, b, sc) ? 'mark' : kind
+
+    // ④ 덧쓰기: 이미 있는 손글씨 위에 크게 겹쳐 쓴 획은 새 글자가 아니라 그 글자에 더한 것
+    // (실측: 3을 다시 써서 3이 두 개가 되자 교환 대상이 엇갈려 5↔3이 계속 막혔다)
+    if (k === 'mark' || k === 'dot') {
+      const area = Math.max(1, b.w * b.h)
+      const host = this.objs.find((o) => {
+        if (o.kind !== 'mark') return false
+        const iw = Math.min(o.bbox.x + o.bbox.w, b.x + b.w) - Math.max(o.bbox.x, b.x)
+        const ih = Math.min(o.bbox.y + o.bbox.h, b.y + b.h) - Math.max(o.bbox.y, b.y)
+        return iw > 0 && ih > 0 && iw * ih >= 0.5 * area
+      })
+      if (host) {
+        host.strokes.push(stroke)
+        host.bbox = unionBox(host.bbox, b)
+        host.t = t
+        return { kind: '획', desc: `손글씨 ${host.id}에 덧씀`, t, objId: host.id }
+      }
+    }
     const o: BoardObj = { id: this.newId(), kind: k, strokes: [stroke], bbox: b, t }
     if (k === 'line') o.pts = simplify(pts, 24)
     this.objs.push(o)
     return this.rewriteCheck(o, t) ?? { kind: '획', desc: `${KIND_KO[kind]} ${o.id} 추가`, t, objId: o.id }
   }
 
-  private floatingUpright(pts: InkPoint[], b: Box) {
-    if (!(b.h > 2.5 * b.w && b.h < 280)) return false
-    const ends = [pts[0], pts[pts.length - 1]]
+  private floatingUpright(pts: Pt[], b: Box, s: number) {
+    if (!(b.h > 2.5 * b.w && b.h < 280 * s)) return false
     const others = this.objs.filter((o) => o.kind === 'line' || o.kind === 'box')
     if (!others.length) return false
     // 이미 그려진 도형(선·상자들이 둘러싼 범위) 안쪽에 있어야 한다
     const area = others.map((o) => o.bbox).reduce((u, x) => unionBox(u, x))
     if (!(b.x > area.x && b.x + b.w < area.x + area.w && b.y > area.y && b.y + b.h < area.y + area.h)) return false
-    return !ends.some((e) => others.some((o) => o.strokes.some((st) => st.pts.some((q) => dist(q, e) < 30))))
+    return !this.touchesFrame(pts, others, 30 * s)
+  }
+
+  private touchesFrame(pts: Pt[], frame: BoardObj[], tol: number) {
+    const ends = [pts[0], pts[pts.length - 1]]
+    return ends.some((e) => frame.some((o) => o.strokes.some((st) => st.pts.some((q) => dist(q, e) < tol))))
+  }
+
+  /**
+   * 손글씨로 분류된 곧추선 획 하나를 지금 맥락으로 다시 본다. 틀에 끝이 닿아 있고 틀 높이에 가깝거나
+   * 손글씨보다 훨씬 길면 칸 구분선(선)이다. 구분선은 보통 숫자보다 먼저 그려서, 그릴 때는 비교할
+   * 손글씨 크기가 없다. 숫자 1은 틀에 닿지 않으므로 바뀌지 않는다. 선을 손글씨로 되돌리지는 않는다.
+   */
+  private promoteDividers() {
+    const { dividerSpan, dividerVsWriting } = this.tuning
+    const writing = this.writingHeight()
+    const frame = this.objs.filter((x) => (x.kind === 'line' || x.kind === 'box') && !(x.strokes.length === 1 && upright(x.strokes[0].pts, x.bbox)))
+    if (!frame.length) return
+    const area = frame.map((x) => x.bbox).reduce((u, x) => unionBox(u, x))
+    const tol = 30 * this.scale()
+    for (const o of this.objs) {
+      if (o.kind !== 'mark' || o.role || o.read || o.strokes.length !== 1) continue
+      const pts = o.strokes[0].pts
+      if (!upright(pts, o.bbox)) continue
+      const spans = o.bbox.h >= dividerSpan * area.h
+      const tall = writing != null && o.bbox.h >= dividerVsWriting * writing
+      if (!(spans || tall) || !this.touchesFrame(pts, frame, tol)) continue
+      o.kind = 'line'
+      o.pts = simplify(pts, 24)
+    }
   }
 
   private addText(srcId: string, text: string, x: number, y: number, t: number): BoardEvent {
@@ -362,6 +606,7 @@ export class Board {
         gone.push({ id: o.id, kind: o.kind, bbox: o.bbox, text: o.text, t })
       } else {
         o.bbox = bboxOf(o.strokes.flatMap((s) => s.pts))
+        delete o.read
         if (o.kind === 'line') o.pts = simplify(o.strokes[0].pts, 24)
       }
     }
