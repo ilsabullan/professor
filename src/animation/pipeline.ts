@@ -9,7 +9,7 @@ import { Engine, Player, type PlayStep } from './engine'
 import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
 import { quickFromBoard, quickFromSpeech } from './quick'
-import { alignDirection, describeGrounding, type GateMode, groundSpeech, keepGrounded, mentionedValues, planNumericSort, planNumericSwap, planRestore, rejectUngrounded, type Grounding } from './grounding'
+import { alignDirection, describeGrounding, measureTranslation, type GateMode, groundSpeech, keepGrounded, mentionedValues, planNumericSort, planNumericSwap, planRestore, rejectUngrounded, type Grounding } from './grounding'
 import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput, type SttProvider } from './speech'
@@ -680,7 +680,8 @@ export class Pipeline {
         seen.add(i)
         const sanitized = ps.ops.map(sanitizeOp)
         // 말한 방향과 반대로 민 이동은 부호를 바로잡는다
-        const ops = grounding?.phase === 'final' && sanitized.every(Boolean) ? alignDirection(sanitized as Op[], grounding.text) : sanitized
+        const ops = grounding?.phase === 'final' && sanitized.every(Boolean)
+          ? measureTranslation(alignDirection(sanitized as Op[], grounding.text), grounding.text, this.board, performance.now()) : sanitized
         if (ops.some((op, k) => op !== sanitized[k])) this.log('aligned', { reqId: rec.id, from: sanitized, to: ops })
         const reject = (reason: string) => {
           rec.rejected = (rec.rejected ?? 0) + 1

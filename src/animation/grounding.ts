@@ -140,6 +140,26 @@ export function alignDirection(ops: Op[], text: string): Op[] {
   })
 }
 
+/**
+ * "오른쪽으로 이만큼"의 이만큼은 방금 그린 이동량 화살표다. 그 화살표의 가로(세로) 변위로 by를 정한다.
+ * 실측 082838: 60px 화살표를 그리고 "오른쪽으로 이만큼"이라 했는데 by [-16,0]으로 거의 안 움직였다.
+ */
+export function measureTranslation(ops: Op[], text: string, board: Board, now: number): Op[] {
+  if (!/[이요그]\s*만큼|이\s*정도/.test(text)) return ops
+  const [dx, dy] = spokenDirection(text)
+  if (!dx && !dy) return ops
+  const axes = board.axes()
+  const arrow = board.objs
+    .filter((o) => o.kind === 'line' && o.arrowEnd && o.pts && o.pts.length >= 2 && !axes.has(o.id) && now - o.t < 120000)
+    .sort((a, b) => b.t - a.t)[0]
+  if (!arrow?.pts) return ops
+  const [a, z] = [arrow.pts[0], arrow.pts[arrow.pts.length - 1]]
+  const vx = Math.abs(z.x - a.x), vy = Math.abs(z.y - a.y)
+  const by: [number, number] = [dx ? dx * Math.round(vx) : 0, dy ? dy * Math.round(vy) : 0]
+  if (Math.hypot(...by) < 20) return ops
+  return ops.map((op) => op.v === 'move' && op.by && op.id !== arrow.id ? { ...op, by } : op)
+}
+
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
   const strict = mode === 'strict'

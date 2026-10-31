@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, groundSpeech, measureTranslation, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -48,7 +48,8 @@ describe('최신 실측 회귀', () => {
   })
 
   it('08:28 실측: "오른쪽으로" 말했는데 왼쪽으로 민 그래프 이동을 오른쪽으로 바로잡는다', () => {
-    const b = boardFor(fixture('real-graph-082838'))
+    const b = new Board()
+    for (const input of fixture('real-graph-082838').inputs.filter((i) => i.type === 'ink' && i.n <= 93)) b.apply(input.event!)
     // 실측 AI 응답 그대로 (n=210, 271, 289, 334)
     const real: [string, [number, number], number][] = [
       ['y는 x 마이너스 2의 제곱 . 오른쪽으로 이만큼 옮기면', [-16, 0], 1],
@@ -81,6 +82,21 @@ describe('최신 실측 회귀', () => {
     expect(arrow?.kind).toBe('화살표')
     expect(b.axes().size).toBeGreaterThan(0)
     expect(quickFromBoard(arrow!, b)).toEqual([])
+  })
+
+  it('08:28 실측: "오른쪽으로 이만큼"은 방금 그린 60px 이동량 화살표만큼 민다', () => {
+    // 화살표 머리를 그은 순간까지 (사례 끝에서는 칠판을 지웠다)
+    const b = new Board()
+    for (const input of fixture('real-graph-082838').inputs.filter((i) => i.type === 'ink' && i.n <= 93)) b.apply(input.event!)
+    const arrow = b.objs.find((o) => o.arrowEnd)!
+    const now = arrow.t + 5000
+    const move = (by: [number, number]): Op[] => [{ v: 'move', id: 'o9', by, dur: 900 }]
+    const right = measureTranslation(alignDirection(move([-16, 0]), '오른쪽으로 이만큼 옮기면'), '오른쪽으로 이만큼 옮기면', b, now)
+    expect((right[0] as { by: number[] }).by).toEqual([60, 0])
+    const left = measureTranslation(move([-64, 0]), '왼쪽으로 이만큼 더 이동해요', b, now)
+    expect((left[0] as { by: number[] }).by).toEqual([-60, 0])
+    // 숫자로 말한 양("8만큼")은 AI 값을 그대로 둔다
+    expect(measureTranslation(move([192, 0]), '오른쪽으로 8만큼 더 이동해요', b, now)).toEqual(move([192, 0]))
   })
 
   it('01:29 실측의 짧은 밑줄 o16을 별도 숫자 3으로 쓰지 않는다', () => {
