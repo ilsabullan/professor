@@ -4,10 +4,11 @@ import type { Lecture, Page } from "../types";
 import { deleteLecture, listLectures, putLecture, putPdf } from "../lib/db";
 import { forgetLecturePdf, openPdf, renderPdfPage } from "../lib/pdf";
 import { uid } from "../lib/id";
+import { renameLecture, uniqueTitle } from "../lib/titles";
 import { Menu } from "../components/Menu";
 import { ConfirmDialog, PromptDialog } from "../components/Dialog";
 
-async function createLecture(file: File, order: number): Promise<Lecture> {
+async function createLecture(file: File, existing: Lecture[]): Promise<Lecture> {
   const data = await file.arrayBuffer();
   const doc = await openPdf(data);
   try {
@@ -21,7 +22,10 @@ async function createLecture(file: File, order: number): Promise<Lecture> {
     const now = Date.now();
     const lecture: Lecture = {
       id: uid(),
-      title: `${order}차시`,
+      title: uniqueTitle(
+        `${existing.length + 1}차시`,
+        existing.map((l) => l.title),
+      ),
       fileName: file.name,
       createdAt: now,
       updatedAt: now,
@@ -62,7 +66,7 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
     if (!file) return;
     setUploading(true);
     try {
-      await createLecture(file, (lectures?.length ?? 0) + 1);
+      await createLecture(file, lectures ?? []);
       await reload();
     } catch (e) {
       console.error(e);
@@ -77,7 +81,7 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
   const rename = async (lecture: Lecture, title: string) => {
     setDialog(null);
     if (title === lecture.title) return;
-    await putLecture({ ...lecture, title });
+    await renameLecture(lecture, title);
     await reload();
   };
 

@@ -419,6 +419,83 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.nav-title-anchor {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.nav-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 40vw;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--secondary);
+}
+
+.nav-title-btn:not(:disabled):active {
+  background-color: var(--press);
+}
+
+@media (hover: hover) {
+  .nav-title-btn:not(:disabled):hover {
+    background: var(--fill);
+  }
+}
+
+/* 제목을 누르면 아래로 뜨는 이름 바꾸기 창 */
+.title-editor {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  translate: -50% 0; /* transform은 뜨는 애니메이션이 쓰므로 가운데 정렬은 따로 한다 */
+  z-index: 21;
+  width: min(360px, 80vw);
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow:
+    0 0 0 0.5px var(--separator),
+    0 12px 32px rgba(70, 55, 160, 0.22);
+  animation: overview-pop 0.16s ease-out;
+}
+
+/* 말풍선 꼬리 */
+.title-editor::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+  box-shadow: -0.5px -0.5px 0 0 var(--separator);
+}
+
+.title-editor input {
+  position: relative;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--bg);
+  font: inherit;
+  font-size: 17px; /* 16px보다 작으면 아이패드가 화면을 확대한다 */
+  font-weight: 600;
+  color: var(--text);
+  outline: none;
+}
+
+.title-editor input:focus {
+  border-color: var(--accent);
+}
+
 .nav-title {
   max-width: 40vw;
   font-size: 17px;

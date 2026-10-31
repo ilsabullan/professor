@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
+  ChevronDown,
   ChevronLeft,
   Ellipsis,
   Eraser,
@@ -26,6 +27,8 @@ import { Overview } from "../components/Overview";
 import { IconButton } from "../components/IconButton";
 import { Menu } from "../components/Menu";
 import { ConfirmDialog } from "../components/Dialog";
+import { TitleEditor } from "../components/TitleEditor";
+import { renameLecture } from "../lib/titles";
 
 const ICON = { size: 22, strokeWidth: 1.75 };
 const TOOLS: { id: Tool; label: string; icon: ReactNode }[] = [
@@ -105,6 +108,7 @@ export function Editor({
   const [showOverview, setShowOverview] = useState(false);
   const [showPageMenu, setShowPageMenu] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
@@ -581,7 +585,19 @@ export function Editor({
             <LayoutGrid {...ICON} />
           </IconButton>
         </div>
-        <div className="nav-title">{lecture?.title}</div>
+        <div className="menu-anchor nav-title-anchor">
+          <button className="nav-title-btn" onClick={() => setEditingTitle(true)} disabled={!lecture}>
+            <span className="nav-title">{lecture?.title}</span>
+            <ChevronDown size={16} strokeWidth={2} />
+          </button>
+          {editingTitle && lecture && (
+            <TitleEditor
+              initial={lecture.title}
+              onSave={async (title) => setLecture(await renameLecture(lecture, title))}
+              onClose={() => setEditingTitle(false)}
+            />
+          )}
+        </div>
         <div className="nav-side nav-side-right">
           <IconButton label="실행 취소 (Ctrl+Z)" onClick={undo} disabled={!history?.undo.length}>
             <Undo2 {...ICON} />
