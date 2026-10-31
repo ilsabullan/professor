@@ -171,6 +171,30 @@ export class Engine {
     ])
   }
 
+  /** 객체별 배치 기록. layoutChanged로 단계가 전제한 배치가 그대로인지 본다. */
+  layoutSnapshot(): Map<string, { pos: string; ink: string }> {
+    const out = new Map<string, { pos: string; ink: string }>()
+    for (const o of this.board.objs) out.set(o.id, { pos: JSON.stringify(this.settled(o.id)), ink: JSON.stringify([o.t, o.strokes.length, o.bbox]) })
+    for (const id of Object.keys(this.spawned)) out.set(id, { pos: JSON.stringify(this.settled(id)), ink: '' })
+    return out
+  }
+
+  /**
+   * 요청 이후 배치가 바뀌었는지. 기존 객체가 옮겨졌거나, 단계가 가리키는 객체의 필기가 바뀌거나 지워졌을 때만 바뀐 것으로 본다.
+   * 새로 그은 획·무관한 획의 덧그리기는 무시한다 (실측 043036, 050404: 말한 직후 그은 획 때문에 교환이 통째로 버려졌다).
+   */
+  layoutChanged(snap: Map<string, { pos: string; ink: string }>, refs: Iterable<string>): boolean {
+    const now = this.layoutSnapshot()
+    const ref = new Set(refs)
+    for (const [id, was] of snap) {
+      const cur = now.get(id)
+      if (!cur) { if (ref.has(id)) return true; continue }
+      if (cur.pos !== was.pos) return true
+      if (ref.has(id) && cur.ink !== was.ink) return true
+    }
+    return false
+  }
+
   /** 한 단계 전체를 미리 검사한다. 실패하면 어떤 동작/자막도 적용하지 않는다. */
   validateStep(ops: Op[]): string | null {
     const positions = new Map<string, Pt>()

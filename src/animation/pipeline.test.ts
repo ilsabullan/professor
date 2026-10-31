@@ -137,6 +137,37 @@ describe('실측의 입력 중첩과 잘못된 대상', () => {
   })
 })
 
+describe('말한 직후 필기 (실측 043036, 050404)', () => {
+  const line = (bus: InkBus, id: string) => bus.emit({ type: 'stroke', stroke: { id, page: 1, points: Array.from({ length: 20 }, (_, i) => ({ x: 200 + i * 20, y: 520, t: i * 10, p: 0.5 })) } })
+
+  it('확정 발화 요청이 진행 중일 때 그은 획이 그 요청을 취소하지 않고, 끝난 뒤에 따로 부른다', async () => {
+    const { p, bus } = setup()
+    const r = await say(p, '5와 3을 옮겨요')
+    line(bus, 'k1')
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(r.signal.aborted).toBe(false)
+    const n = requests.length
+    r.text(swap() + '\n')
+    r.finish()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(p.engine.settled('o1')?.x).toBe(358)
+    expect(requests.length).toBe(n + 1)
+  })
+
+  it('새 확정 발화는 이전 확정 발화 요청을 취소하고 미뤄 둔 획도 버린다', async () => {
+    const { p, bus } = setup()
+    const r = await say(p, '5와 3을 옮겨요')
+    line(bus, 'k1')
+    await vi.advanceTimersByTimeAsync(1500)
+    const r2 = await say(p, '8과 1을 옮겨요')
+    expect(r.signal.aborted).toBe(true)
+    const n = requests.length
+    r2.finish()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(requests.length).toBe(n)
+  })
+})
+
 describe('04시 실측: 쪼개진 받아쓰기', () => {
   it('"서로 바꿔요"가 두 조각에 연달아 들어와도 3과 1을 한 번만 바꾼다 (logs 042636)', async () => {
     const { p } = setup()

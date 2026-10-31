@@ -46,6 +46,8 @@ interface Trigger {
 interface Inflight {
   rec: ReqRecord
   ctrl: AbortController
+  /** 확정 발화 요청. 뒤이은 필기·미완성 발화가 취소하지 않는다 */
+  final: boolean
 }
 
 /** 계기별로 AI를 부르기 전 기다리는 시간(ms). 짧을수록 빠르고, 연달아 오는 입력은 하나로 묶는다 */
@@ -65,6 +67,15 @@ const DELAY: Record<string, number> = {
 
 /** 같은 쌍을 다시 바꾸면 되풀이로 보는 시간. 실측에서 받아쓰기가 한 문장을 쪼개 "바꿔요"가 두 번 들어왔다 */
 const SWAP_REPEAT_MS = 10000
+
+/** 단계가 가리키는 객체 id. 대상 없는 restore는 전부 되돌리므로 모두를 가리킨다 */
+function opRefs(ops: Op[], board: Board): string[] {
+  return ops.flatMap((op) => {
+    if (op.v === 'restore' && !op.id) return board.objs.map((o) => o.id)
+    const o = op as { id?: unknown; along?: unknown; to?: unknown; from?: unknown; about?: unknown }
+    return [o.id, o.along, o.to, o.from, o.about].filter((x): x is string => typeof x === 'string')
+  })
+}
 /** "안 바뀐다"고 한 쌍을 숫자를 다시 말하지 않고는 바꾸지 않는 시간 */
 const HELD_MS = 30000
 
@@ -119,6 +130,8 @@ export class Pipeline {
 
   private inflight: Inflight | null = null
   private pending: Trigger | null = null
+  /** 확정 발화 요청이 끝난 뒤 부를 필기·미완성 발화 계기 */
+  private deferred: Trigger | null = null
   private timer: ReturnType<typeof setTimeout> | undefined
   private seq = 0
   private firedRules = new Set<string>()
@@ -404,6 +417,7 @@ export class Pipeline {
     // 미완성 발화는 강조만 했다. 확정 발화는 한 개의 새로운 실행 단위다.
     clearTimeout(this.timer)
     this.pending = null
+    this.deferred = null
     this.abortInflight('중단(확정 발화)')
     this.player.cancelPending()
     const grounding = this.speechGrounding(final, tEnd, 'final')
@@ -464,6 +478,11 @@ export class Pipeline {
   private async run(trig: Trigger) {
     if (this.aiStatus !== 'ready') return
     if (!this.board.objs.length && !this.utter.length && !this.interim) return
+    // 말한 직후 필기하면 확정 발화 요청이 취소되고, 이동 권한이 없는 필기 요청만 남아 아무것도 움직이지 않았다 (실측 043036, 050404)
+    if (this.inflight?.final && trig.grounding?.phase !== 'final') {
+      this.deferred = trig
+      return
+    }
     this.abortInflight('중단(새 입력)')
     const settings = { ...this.settings }
     const rec: ReqRecord = {
@@ -481,7 +500,7 @@ export class Pipeline {
     this.reqs.push(rec)
     if (this.reqs.length > 300) this.reqs.shift()
     const ctrl = new AbortController()
-    const inf: Inflight = { rec, ctrl }
+    const inf: Inflight = { rec, ctrl, final: trig.grounding?.phase === 'final' }
     this.inflight = inf
     this.lastCallAt = performance.now()
 
@@ -549,6 +568,9 @@ export class Pipeline {
     }
     this.log('request', { rec: { ...rec }, prompt, raw: consumer.raw(), imageB64 })
     this.notify()
+    const next = this.deferred
+    this.deferred = null
+    if (next && !this.inflight && !this.pending) void this.run(next)
   }
 
   /** AI가 읽은 손글씨 값을 기억 (이미 읽은 건 덮어쓰지 않음) */
@@ -563,7 +585,7 @@ export class Pipeline {
 
   /** 진행 중인 AI 요청·대기·재생이 있는지 (채점에서 반응이 끝날 때까지 기다릴 때) */
   busy() {
-    return !!this.inflight || !!this.pending || !!this.player.current || this.player.queue.length > 0
+    return !!this.inflight || !!this.pending || !!this.deferred || !!this.player.current || this.player.queue.length > 0
   }
 
   /** 마지막 AI 반응에 대한 ✓/✗ */
@@ -624,7 +646,7 @@ export class Pipeline {
     const gate = this.settings.gate
     const seen = new Set<number>()
     const epoch = this.epoch
-    let expectedLayout = this.engine.layoutKey()
+    let expectedLayout = this.engine.layoutSnapshot()
     const readVersions = new Map(this.board.objs.map((o) => [o.id, o.t]))
     let made = 0
     let gated = false
@@ -674,10 +696,10 @@ export class Pipeline {
           reqId: rec.id, ops: validOps, applied: 0, cap: ps.cap, capShown: false, open: false, startedAt: null, maxDur: 0,
           commitKey: `${grounding?.id ?? rec.id}:${mutations.length ? JSON.stringify(mutations) : i}`,
           validate: () => signal?.aborted || epoch !== this.epoch ? '취소되거나 이전 페이지의 요청'
-            : this.engine.layoutKey() !== expectedLayout ? '요청 이후 칠판 배치가 바뀜'
+            : this.engine.layoutChanged(expectedLayout, opRefs(validOps, this.board)) ? '요청 이후 칠판 배치가 바뀜'
             : grounding ? rejectUngrounded(validOps, grounding, this.board, gate) : null,
           onApplied: () => {
-            expectedLayout = this.engine.layoutKey()
+            expectedLayout = this.engine.layoutSnapshot()
             // 다른 이동이 끼면 되풀이가 아니라 새 교환이므로 기록을 바꾼다
             if (validOps.some((op) => op.v === 'move')) this.lastSwap = swap ? { key: swap, t: performance.now() } : null
             // 되돌린 뒤 같은 교환을 다시 보여주는 것은 되풀이가 아니다
@@ -738,6 +760,7 @@ export class Pipeline {
     this.heldPair = null
     clearTimeout(this.timer)
     this.pending = null
+    this.deferred = null
     this.interim = ''
     clearTimeout(this.commitTimer)
     this.committedRaw = ''
