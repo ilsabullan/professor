@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { networkInterfaces } from 'node:os'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -46,6 +48,56 @@ function accessCode(code: string): Plugin {
 }
 
 /**
+ * 테스트 기록: 브라우저가 보낸 이벤트를 logs/<세션>.jsonl 에 한 줄씩 쌓는다.
+ * imageB64 필드는 logs/<세션>/<종류>-<번호>.jpg 파일로 빼고 경로만 남긴다.
+ */
+function testLog(): Plugin {
+  const dir = resolve('logs')
+  return {
+    name: 'test-log',
+    configureServer(server) {
+      server.middlewares.use('/api/log', (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          return res.end()
+        }
+        const chunks: Buffer[] = []
+        let size = 0
+        req.on('data', (c: Buffer) => {
+          size += c.length
+          if (size > 20e6) req.destroy()
+          else chunks.push(c)
+        })
+        req.on('end', () => {
+          try {
+            const { session, entries } = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+              session: string
+              entries: Record<string, unknown>[]
+            }
+            if (!/^[\w-]{6,64}$/.test(session) || !Array.isArray(entries)) throw new Error('bad payload')
+            mkdirSync(join(dir, session), { recursive: true })
+            const lines = entries.map((e) => {
+              if (typeof e.imageB64 === 'string') {
+                const name = `${String(e.type)}-${String(e.n)}.jpg`
+                writeFileSync(join(dir, session, name), Buffer.from(e.imageB64, 'base64'))
+                delete e.imageB64
+                e.imageFile = `logs/${session}/${name}`
+              }
+              return JSON.stringify(e)
+            })
+            appendFileSync(join(dir, `${session}.jsonl`), lines.join('\n') + '\n')
+            res.end('ok')
+          } catch (err) {
+            res.statusCode = 400
+            res.end(String(err))
+          }
+        })
+      })
+    },
+  }
+}
+
+/**
  * 개발 서버 전용 Anthropic 프록시.
  * 브라우저는 /api/anthropic/* 로 보내고, 여기서 .env의 ANTHROPIC_API_KEY를 붙여 넘긴다.
  * 키는 서버(Node)에서만 읽으므로 브라우저 번들에 들어가지 않는다.
@@ -71,7 +123,7 @@ export default defineConfig(({ mode }) => {
   const https = process.env.DEV_HTTP !== '1'
   return {
     // 접속 코드 검사가 다른 미들웨어(프록시 포함)보다 먼저 돌도록 맨 앞에 둔다
-    plugins: [accessCode(code), ...(https ? [basicSsl()] : []), react(), statusPlugin(!!key)],
+    plugins: [accessCode(code), ...(https ? [basicSsl()] : []), react(), statusPlugin(!!key), testLog()],
     server: {
       // 같은 와이파이의 다른 기기에서 접속 가능. 마이크·음성 인식 때문에 HTTPS(자체 인증서)
       host: true,

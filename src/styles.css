@@ -243,6 +243,11 @@ main {
   border-color: #2f6474;
 }
 
+.btn.issue {
+  border-color: #6a2a24;
+  color: #ffb3a8;
+}
+
 .btn.rec {
   background: #4a1f1b;
   border-color: var(--red);

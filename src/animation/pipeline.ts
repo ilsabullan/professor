@@ -87,6 +87,8 @@ export class Pipeline {
   aiRaw = ''
   shown: string[] = []
   quickLog: string[] = []
+  /** 테스트 기록 훅 (개발용). 기본은 아무것도 안 함 */
+  log: (type: string, data: Record<string, unknown>) => void = () => {}
 
   private inflight: Inflight | null = null
   private lastSpec: { text: string; rec: ReqRecord; doneAt: number } | null = null
@@ -168,6 +170,7 @@ export class Pipeline {
   update(patch: Partial<Settings>) {
     const rewarm = (patch.model && patch.model !== this.settings.model) || (patch.thinking && patch.thinking !== this.settings.thinking)
     this.settings = { ...this.settings, ...patch }
+    this.log('settings', { settings: this.settings })
     if (rewarm) void this.warm()
     this.notify()
   }
@@ -208,7 +211,9 @@ export class Pipeline {
   // ---------- 입력 ----------
   private handleInk(e: InkEvent) {
     const before = this.board.objs.map((o) => o.id)
+    this.log('ink', { event: e })
     const ev = this.board.apply(e)
+    this.log('board', { event: ev, ...this.stateForLog() })
     if (e.type === 'page' || e.type === 'clear') {
       this.resetAnimation()
       return
@@ -228,6 +233,7 @@ export class Pipeline {
     const now = performance.now()
     for (const op of ops) this.engine.applyOp(op, now)
     const ms = now - t0
+    this.log('quick', { label, ops, ms: Math.round(ms) })
     this.quickLog.unshift(`${label} → ${ops.map((o) => o.v).join(', ')} (${Math.round(ms)}ms)`)
     this.quickLog.length = Math.min(this.quickLog.length, 6)
     this.notifySoon()
@@ -236,6 +242,7 @@ export class Pipeline {
 
   onInterim(text: string, t: number) {
     this.interim = text.trim()
+    this.log('interim', { text: this.interim })
     const quickMs = this.quick(quickFromSpeech(this.interim, this.board, this.engine, this.firedRules), t, '말')
     const conn = this.interim.match(CONNECTIVES) ?? []
     if (conn.length > this.connCount) {
@@ -250,6 +257,7 @@ export class Pipeline {
 
   onFinal(text: string, tEnd: number) {
     const final = text.trim()
+    this.log('final', { text: final })
     this.interim = ''
     this.lastEarlyLen = 0
     this.connCount = 0
@@ -339,12 +347,9 @@ export class Pipeline {
 
     const content: Anthropic.ContentBlockParam[] = []
     rec.image = this.settings.image === 'on' || (this.settings.image === 'auto' && this.board.objs.some((o) => o.kind === 'mark'))
-    if (rec.image) {
-      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: snapshotB64(this.board, this.engine) } })
-    }
-    content.push({
-      type: 'text',
-      text: buildUserPrompt({
+    const imageB64 = rec.image ? snapshotB64(this.board, this.engine) : undefined
+    if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } })
+    const prompt = buildUserPrompt({
         board: this.board,
         engine: this.engine,
         utter: this.utter,
@@ -352,8 +357,8 @@ export class Pipeline {
         shown: this.shown,
         trigger: trig.desc,
         now: performance.now(),
-      }),
     })
+    content.push({ type: 'text', text: prompt })
     rec.tSend = performance.now()
     this.notify()
 
@@ -384,7 +389,38 @@ export class Pipeline {
         if (this.interim && this.settings.early) this.schedule({ kind: '말 중', desc: `말하는 중: "${this.interim}"`, t: performance.now() })
       }
     }
+    this.log('request', { rec: { ...rec }, prompt, raw: consumer.raw(), imageB64 })
     this.notify()
+  }
+
+  /** 기록용 현재 상태 요약 */
+  stateForLog() {
+    const r = Math.round
+    return {
+      objs: this.board.objs.map((o) => ({
+        id: o.id,
+        kind: o.kind,
+        bbox: [r(o.bbox.x), r(o.bbox.y), r(o.bbox.w), r(o.bbox.h)],
+        strokes: o.strokes.map((s) => s.id),
+        ...(o.text ? { text: o.text } : {}),
+        ...(o.arrowEnd ? { arrowEnd: o.arrowEnd } : {}),
+      })),
+      grids: this.board.grids.map((g) => ({ id: g.id, rows: g.rows, cols: g.cols, lines: g.lineIds, cells: g.cells.map((c) => c.items) })),
+      flows: this.engine.flows.map((f) => f.along),
+    }
+  }
+
+  /** 테스트 중 "의도와 다름"을 표시: 메모와 그 순간의 화면·상태를 기록 */
+  markIssue(note: string) {
+    this.log('issue', {
+      note,
+      caption: this.caption,
+      shown: this.shown.slice(-6),
+      utter: this.utter.slice(-5).map((u) => u.text),
+      lastRaw: this.aiRaw,
+      ...this.stateForLog(),
+      imageB64: snapshotB64(this.board, this.engine, 1280),
+    })
   }
 
   /** 스트리밍으로 쌓이는 응답 글자를 단계·동작으로 바꿔 바로 재생에 넘긴다 */
@@ -393,7 +429,9 @@ export class Pipeline {
     const rawSeen: number[] = []
     let gated = false
     let none = false
+    let last = ''
     const onText = (full: string) => {
+      last = full
       if (rec.tFirst == null) rec.tFirst = performance.now()
       this.aiRaw = full
       const parsed = parseProgress(full)
@@ -430,7 +468,7 @@ export class Pipeline {
       if (made.some((s) => s.ops.length)) return '재생'
       return none ? '새 움직임 없음' : '형식 오류'
     }
-    return { onText, finish }
+    return { onText, finish, raw: () => last }
   }
 
   /**
