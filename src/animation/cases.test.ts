@@ -11,7 +11,7 @@ import { Board } from './board'
 interface Case {
   name: string
   note: string
-  expect: { grid?: [number, number]; cellsWithMark?: number; underlines?: number; arrows?: number }
+  expect: { marks?: number; boxes?: number; underlines?: number; arrows?: number }
   events: InkEvent[]
 }
 
@@ -26,14 +26,8 @@ describe('실측 버그 사례', () => {
       const b = new Board()
       for (const e of c.events) b.apply(e)
       const x = c.expect
-      if (x.grid) {
-        expect(b.grids.map((g) => [g.rows, g.cols])).toContainEqual(x.grid)
-      }
-      if (x.cellsWithMark != null) {
-        const g = b.grids[0]
-        const n = g?.cells.filter((cell) => cell.items.some((id) => ['mark', 'text'].includes(b.get(id)?.kind ?? ''))).length
-        expect(n).toBe(x.cellsWithMark)
-      }
+      if (x.marks != null) expect(b.objs.filter((o) => o.kind === 'mark').length).toBe(x.marks)
+      if (x.boxes != null) expect(b.objs.filter((o) => o.kind === 'box').length).toBe(x.boxes)
       if (x.underlines != null) {
         expect(b.objs.filter((o) => b.underlineOf(o.id)).length).toBe(x.underlines)
       }

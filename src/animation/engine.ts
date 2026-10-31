@@ -18,6 +18,9 @@ interface AnimState {
   pulse: number
   labelText?: string
   path?: PathAnim | null
+  /** 이동이 끝나면 도착할 오프셋 (애니메이션 중에도 계획은 이 값 기준) */
+  gx?: number
+  gy?: number
   /** 이 시각이 되면 사라짐 (그 전 300ms 동안 흐려짐) */
   removeAt?: number
 }
@@ -34,6 +37,9 @@ interface Spawned {
   h: number
   text: string
   color: string
+  /** 이동이 끝나면 도착할 자리 */
+  gx?: number
+  gy?: number
 }
 
 interface Flow {
@@ -66,6 +72,8 @@ export class Engine {
   flows: Flow[] = []
   private tweens: Tween[] = []
   private takenOver = new Set<string>()
+  /** 지금 단계가 시작될 때의 위치 (한 단계 안의 move는 모두 이 기준으로 동시에 움직인다) */
+  private frozen = new Map<string, Pt>()
 
   constructor(
     private board: Board,
@@ -115,6 +123,57 @@ export class Engine {
   /** 애니메이션이 대신 그리고 있는 객체인지 (원래 필기는 숨겨짐) */
   isTakenOver(id: string) {
     return this.takenOver.has(id)
+  }
+
+  /** 새 단계 시작: 단계 시작 위치 기록을 비운다 */
+  beginStep() {
+    this.frozen.clear()
+  }
+
+  /** 움직임이 끝났을 때 놓일 중심 (진행 중인 애니메이션의 도착지) */
+  settled(id: string): Pt | null {
+    const o = this.board.get(id)
+    if (o) {
+      const c = boxCenter(o.bbox)
+      const off = this.offset(id)
+      return { x: c.x + off.x, y: c.y + off.y }
+    }
+    const s = this.spawned[id]
+    return s ? { x: s.gx ?? s.x, y: s.gy ?? s.y } : null
+  }
+
+  /** 그린 객체가 원래 자리에서 옮겨질(옮겨진) 양 */
+  offset(id: string): Pt {
+    const a = this.anim[id]
+    return { x: a?.gx ?? a?.dx ?? 0, y: a?.gy ?? a?.dy ?? 0 }
+  }
+
+  private startPos(id: string): Pt | null {
+    if (!this.frozen.has(id)) {
+      const p = this.settled(id)
+      if (!p) return null
+      this.frozen.set(id, p)
+    }
+    return this.frozen.get(id)!
+  }
+
+  /** 손글씨·글자끼리 크게 겹친 쌍 (AI에게 알려 스스로 바로잡게) */
+  overlaps(): [string, string][] {
+    const items = this.board.objs.filter((o) => o.kind === 'mark' || o.kind === 'text')
+    const boxes = items.map((o) => {
+      const off = this.offset(o.id)
+      return { id: o.id, x: o.bbox.x + off.x, y: o.bbox.y + off.y, w: o.bbox.w, h: o.bbox.h }
+    })
+    const out: [string, string][] = []
+    for (let i = 0; i < boxes.length; i++)
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i]
+        const b = boxes[j]
+        const iw = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+        const ih = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+        if (iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.w * a.h, b.w * b.h)) out.push([a.id, b.id])
+      }
+    return out
   }
 
   exists(id: string) {
@@ -178,82 +237,43 @@ export class Engine {
         return 400
       }
       case 'move': {
-        if (!this.exists(op.id)) return 0
-        const c = this.center(op.id)
-        if (!c) return 0
-        const a = this.A(op.id)
+        // 출발점과 도착점 모두 '이 단계가 시작될 때의 위치' 기준. 같은 단계의 move들은 동시에 움직이므로
+        // o7→o8, o8→o7 을 같이 쓰면 교환이 된다. 도착지에 무엇이 있든 엔진이 따로 손대지 않는다
+        const from = this.startPos(op.id)
+        if (!from) return 0
         const sp = this.spawned[op.id]
         if (!sp) this.takeOver(op.id)
+        const a = this.A(op.id)
         if (op.along) {
           const pts = this.linePts(op.along)
           if (!pts) return 0
-          a.path = { pts, t0: now, dur: op.dur, base: sp ? { x: 0, y: 0 } : { x: c.x - a.dx, y: c.y - a.dy } }
+          const end = pts[pts.length - 1]
+          const base = sp ? { x: 0, y: 0 } : { x: from.x - this.offset(op.id).x, y: from.y - this.offset(op.id).y }
+          a.path = { pts, t0: now, dur: op.dur, base }
+          if (sp) {
+            sp.gx = end.x
+            sp.gy = end.y
+          } else {
+            a.gx = end.x - base.x
+            a.gy = end.y - base.y
+          }
           return op.dur
         }
-        const to = typeof op.to === 'string' ? this.center(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
+        const to = typeof op.to === 'string' ? this.startPos(op.to) : op.to ? { x: op.to[0], y: op.to[1] } : null
         if (!to) return 0
         if (sp) {
+          sp.gx = to.x
+          sp.gy = to.y
           this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now)
           this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now)
         } else {
-          this.tween((v) => (a.dx = v), a.dx, a.dx + to.x - c.x, op.dur, now)
-          this.tween((v) => (a.dy = v), a.dy, a.dy + to.y - c.y, op.dur, now)
+          const gx = this.offset(op.id).x + to.x - from.x
+          const gy = this.offset(op.id).y + to.y - from.y
+          a.gx = gx
+          a.gy = gy
+          this.tween((v) => (a.dx = v), a.dx, gx, op.dur, now)
+          this.tween((v) => (a.dy = v), a.dy, gy, op.dur, now)
         }
-        return op.dur
-      }
-      case 'swap': {
-        const ca = this.center(op.a)
-        const cb = this.center(op.b)
-        if (!ca || !cb || op.a === op.b) return 0
-        const pairs: [string, Pt, Pt][] = [
-          [op.a, cb, ca],
-          [op.b, ca, cb],
-        ]
-        for (const [id, to, from] of pairs) {
-          const sp = this.spawned[id]
-          if (sp) {
-            this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now)
-            this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now)
-          } else {
-            this.takeOver(id)
-            const a = this.A(id)
-            this.tween((v) => (a.dx = v), a.dx, a.dx + to.x - from.x, op.dur, now)
-            this.tween((v) => (a.dy = v), a.dy, a.dy + to.y - from.y, op.dur, now)
-          }
-        }
-        return op.dur
-      }
-      case 'arrange': {
-        const g = this.board.grids.find((x) => x.id === op.grid) ?? this.board.grids[0]
-        if (!g) return 0
-        const cells = [...g.cells].sort((a, b) => a.r - b.r || a.c - b.c)
-        // 지금 칸에 든 객체(칸 순서대로). AI가 준 순서는 이 안에서만, 중복 없이, 빠진 건 원래 순서로 채운다
-        const members = cells.map((cell) =>
-          this.board.objs.filter((o) => {
-            if (o.kind !== 'mark' && o.kind !== 'text') return false
-            const c = this.center(o.id)
-            return !!c && c.x > cell.box.x && c.x < cell.box.x + cell.box.w && c.y > cell.box.y && c.y < cell.box.y + cell.box.h
-          }),
-        )
-        const current = members.flat().map((o) => o.id)
-        const asked = [...new Set(op.order)].filter((id) => current.includes(id))
-        const order = [...asked, ...current.filter((id) => !asked.includes(id))]
-        order.forEach((id, i) => {
-          const cell = cells[i]
-          const c = this.center(id)
-          if (!cell || !c) return
-          const to = { x: cell.box.x + cell.box.w / 2, y: cell.box.y + cell.box.h / 2 }
-          const sp = this.spawned[id]
-          if (sp) {
-            this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now)
-            this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now)
-            return
-          }
-          this.takeOver(id)
-          const a = this.A(id)
-          this.tween((v) => (a.dx = v), a.dx, a.dx + to.x - c.x, op.dur, now)
-          this.tween((v) => (a.dy = v), a.dy, a.dy + to.y - c.y, op.dur, now)
-        })
         return op.dur
       }
       case 'color': {
@@ -516,7 +536,10 @@ export class Player {
   tick(now: number) {
     if (!this.current) {
       this.current = this.queue.shift() ?? null
-      if (this.current) this.current.startedAt = now
+      if (this.current) {
+        this.current.startedAt = now
+        this.engine.beginStep()
+      }
     }
     const s = this.current
     if (!s) return

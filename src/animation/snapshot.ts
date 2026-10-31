@@ -26,14 +26,14 @@ export function snapshotB64(board: Board, engine: Engine, maxW = 640): string {
     }
   }
   engine.render(c)
-  // 축소된 이미지에서도 읽히도록 최종 크기 14px 기준. 표 테두리 선에는 id를 달지 않는다(복잡해짐)
+  // 축소된 이미지에서도 읽히도록 최종 크기 14px 기준. 밑줄·긴 선에는 id를 달지 않는다(복잡해짐)
   c.fillStyle = '#ff5a46'
   c.font = `bold ${Math.round(14 / sc)}px sans-serif`
   c.textBaseline = 'alphabetic'
   for (const o of board.objs) {
-    if (board.isGridLine(o.id) || board.underlineOf(o.id)) continue
-    const a = engine.anim[o.id]
-    c.fillText(o.id, o.bbox.x - 4 + (a?.dx ?? 0), o.bbox.y - 4 + (a?.dy ?? 0))
+    if (board.underlineOf(o.id) || (o.kind === 'line' && Math.hypot(o.bbox.w, o.bbox.h) > 200)) continue
+    const off = engine.offset(o.id)
+    c.fillText(o.id, o.bbox.x - 4 + off.x, o.bbox.y - 4 + off.y)
   }
   return cv.toDataURL('image/jpeg', 0.8).split(',')[1]
 }

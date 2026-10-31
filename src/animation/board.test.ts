@@ -63,6 +63,20 @@ describe('classify', () => {
   it('숫자 8은 상자가 아니라 손글씨', () => expect(classify(P(eight(100, 100)))).toBe('mark'))
   it('작은 동그라미(숫자 0)는 손글씨', () => expect(classify(P(circle(100, 100, 45)))).toBe('mark'))
   it('큰 동그라미는 감싸는 상자', () => expect(classify(P(circle(300, 300, 130)))).toBe('box'))
+  it('길쭉하게 쓴 8은 상자가 아니라 손글씨 (실측에서 상자로 봄)', () => {
+    const tall: [number, number][] = []
+    for (let i = 0; i <= 30; i++) {
+      const a = Math.PI / 2 - (i / 30) * Math.PI * 2
+      tall.push([100 + 36 * Math.cos(a), 140 - 40 + 40 * Math.sin(a)])
+    }
+    for (let i = 0; i <= 30; i++) {
+      const a = -Math.PI / 2 + (i / 30) * Math.PI * 2
+      tall.push([100 + 37 * Math.cos(a), 140 + 41 + 41 * Math.sin(a)])
+    }
+    expect(classify(P(tall))).toBe('mark')
+  })
+  it('짧게 곧추선 획(숫자 1)은 손글씨', () => expect(classify(P(seg(800, 140, 803, 280)))).toBe('mark'))
+  it('긴 세로선은 선', () => expect(classify(P(seg(800, 100, 806, 400)))).toBe('line'))
 })
 
 describe('Board', () => {
@@ -87,24 +101,7 @@ describe('Board', () => {
     expect(ev?.kind).toBe('화살표')
   })
 
-  it('선으로 그린 칸을 1행×4칸 배열로 묶고, 칸 안 숫자를 칸에 넣는다', () => {
-    const b = new Board()
-    stroke(b, seg(100, 100, 900, 104))
-    stroke(b, seg(100, 300, 900, 296))
-    for (const x of [100, 300, 500, 700, 900]) stroke(b, seg(x, 95, x + 6, 305))
-    stroke(b, five(170, 140))
-    clock += 2000
-    stroke(b, seg(800, 140, 803, 260)) // 숫자 1 (곧은 세로획)
-    expect(b.grids).toHaveLength(1)
-    const g = b.grids[0]
-    expect([g.rows, g.cols]).toEqual([1, 4])
-    expect(g.cells[0].items).toHaveLength(1)
-    const one = b.get(g.cells[3].items[0])
-    expect(one?.kind).toBe('mark')
-    expect(g.lineIds).not.toContain(one?.id)
-  })
-
-  it('나란한 두 상자 사이의 화살표는 표가 아니라 화살표로 남는다 (TCP 예시에서 손글씨로 바뀐 버그)', () => {
+  it('나란한 두 상자 사이의 화살표는 화살표로 남는다 (TCP 예시)', () => {
     const b = new Board()
     stroke(b, rect(110, 250, 200, 140))
     clock += 2000
@@ -116,19 +113,8 @@ describe('Board', () => {
       [957, 320],
       [935, 331],
     ], 150)
-    expect(b.grids).toHaveLength(0)
     expect(b.get('o3')?.kind).toBe('line')
     expect(ev?.kind).toBe('화살표')
-  })
-
-  it('떨어진 상자 여러 개는 표로 묶지 않는다', () => {
-    const b = new Board()
-    for (let i = 0; i < 4; i++) {
-      stroke(b, rect(330 + i * 160, 290, 120, 120))
-      clock += 2000
-    }
-    expect(b.objs.filter((o) => o.kind === 'box')).toHaveLength(4)
-    expect(b.grids).toHaveLength(0)
   })
 
   it('펜을 대기 직전의 짧은 떠 있음은 가리키기가 아니다', () => {

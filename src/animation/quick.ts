@@ -19,10 +19,10 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
     case '화살표':
       return [{ v: 'flow', along: id, n: 6, speed: 1.2, color: COLORS.cyan, rev: !!ev.rev }]
     case '덧그리기': {
-      // 표 테두리·밑줄을 다시 그은 건 강조일 뿐 흐름이 아니다. 화살표나 긴 선일 때만 흐름
+      // 밑줄을 다시 그은 건 강조일 뿐 흐름이 아니다. 화살표나 긴 선일 때만 흐름
       const o = board.get(id)
       const long = !!o?.pts && Math.hypot(o.bbox.w, o.bbox.h) > 150
-      if (board.isGridLine(id) || board.underlineOf(id) || !(o?.arrowEnd || long)) return []
+      if (board.underlineOf(id) || !(o?.arrowEnd || long)) return []
       return [{ v: 'flow', along: id, n: 10, speed: 1.6, color: '#cdf0ff', rev: !!ev.rev }]
     }
     case '다시 쓰기':
@@ -44,7 +44,7 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
 
 /** 가장 최근에 그린 화살표 (흐름 키워드는 방향이 분명한 화살표에만) */
 function latestArrow(board: Board) {
-  return [...board.objs].reverse().find((o) => o.kind === 'line' && o.arrowEnd && !board.isGridLine(o.id))
+  return [...board.objs].reverse().find((o) => o.kind === 'line' && o.arrowEnd)
 }
 
 /** 말에서 확실한 키워드가 나오면 바로 반영. 이미 쓴 규칙(fired)은 같은 문장에서 다시 쓰지 않는다 */

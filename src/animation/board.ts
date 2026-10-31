@@ -5,7 +5,6 @@ import {
   area,
   bboxOf,
   boxCenter,
-  contains,
   dist,
   distToSegment,
   expand,
@@ -17,7 +16,6 @@ import {
   straightness,
   unionBox,
 } from './geometry'
-import { type Grid, cellOf, detectGrids } from './grid'
 
 export type ObjKind = 'box' | 'line' | 'mark' | 'dot' | 'text'
 
@@ -94,6 +92,14 @@ function cornersHit(pts: Pt[], b: Box) {
   return corners.filter((c) => pts.some((p) => dist(p, c) < tol)).length
 }
 
+/** 테두리 근처(가장자리 12% 안)를 지나는 점의 비율. 사각형은 거의 1, 8·0처럼 가운데를 지나면 낮다 */
+function edgeShare(pts: Pt[], b: Box) {
+  const mx = 0.12 * b.w
+  const my = 0.12 * b.h
+  const near = pts.filter((p) => p.x - b.x < mx || b.x + b.w - p.x < mx || p.y - b.y < my || b.y + b.h - p.y < my)
+  return near.length / pts.length
+}
+
 /**
  * 획 하나의 모양 판별.
  * 크기보다 "곧은가, 닫혔는가, 모서리가 있는가"를 본다. 크게 쓴 숫자도 구불구불하면 손글씨(mark).
@@ -106,8 +112,12 @@ export function classify(pts: Pt[]): Exclude<ObjKind, 'text'> {
   if (diag < 14) return 'dot'
   const gap = dist(pts[0], pts[pts.length - 1])
   const closed = gap < Math.max(22, 0.28 * diag) && L > 1.9 * diag && b.w > 34 && b.h > 34
-  if (closed) return cornersHit(pts, b) >= 3 || size >= 220 ? 'box' : 'mark'
-  if (straightness(pts) >= 0.8) return diag < 40 ? 'mark' : 'line'
+  if (closed) return (cornersHit(pts, b) >= 3 && edgeShare(pts, b) >= 0.75) || size >= 220 ? 'box' : 'mark'
+  if (straightness(pts) >= 0.8) {
+    // 짧게 곧추선 획은 숫자 1 같은 글자 (긴 세로선은 칸 구분선 등으로 선)
+    if (b.h > 2.5 * b.w && b.h < 170) return 'mark'
+    return diag < 40 ? 'mark' : 'line'
+  }
   // 납작하고 넓은 획(살짝 흔들린 밑줄·가로선)은 선
   if (b.w >= 40 && b.h < 0.25 * b.w) return 'line'
   return size < 200 ? 'mark' : 'line'
@@ -148,7 +158,6 @@ export class Board {
   erased: ErasedObj[] = []
   traces: Trace[] = []
   events: BoardEvent[] = []
-  grids: Grid[] = []
   private nextId = 1
   private nextTrace = 1
 
@@ -157,7 +166,6 @@ export class Board {
     this.erased = []
     this.traces = []
     this.events = []
-    this.grids = []
     this.nextId = 1
     this.nextTrace = 1
   }
@@ -166,14 +174,10 @@ export class Board {
     return this.objs.find((o) => o.id === id)
   }
 
-  isGridLine(id: string) {
-    return this.grids.some((g) => g.lineIds.includes(id))
-  }
-
   /** 손글씨·글자 바로 아래에 그은 짧은 가로선이면 그 대상 id (밑줄 = 강조, 흐름 아님) */
   underlineOf(id: string): string | undefined {
     const o = this.get(id)
-    if (!o || o.kind !== 'line' || o.arrowEnd || this.isGridLine(id)) return undefined
+    if (!o || o.kind !== 'line' || o.arrowEnd) return undefined
     const b = o.bbox
     if (b.w > 180 || b.h > b.w * 0.35) return undefined
     return this.objs.find((m) => {
@@ -208,31 +212,11 @@ export class Board {
         ev = this.addTrace(e.points)
         break
     }
-    if (e.type === 'stroke' || e.type === 'erase' || e.type === 'text') this.refreshGrids()
     if (ev) {
       this.events.push(ev)
       if (this.events.length > 40) this.events.shift()
     }
     return ev
-  }
-
-  /** 표·배열 다시 찾기. 칸 안에 있는 짧은 직선(숫자 1 등)은 손글씨로 바꾼다 */
-  private refreshGrids() {
-    this.grids = detectGrids(this.objs)
-    for (const g of this.grids) {
-      for (const cell of g.cells) {
-        for (const id of cell.items) {
-          const o = this.get(id)
-          const short = Math.hypot(o?.bbox.w ?? 0, o?.bbox.h ?? 0) < 200
-          // 세로로 선 짧은 획만 숫자 1로 본다 (가로 밑줄은 그대로 선)
-          const upright = !!o && o.bbox.h > o.bbox.w * 2
-          if (o?.kind === 'line' && !o.arrowEnd && short && upright && contains(expand(cell.box, 4), o.bbox)) {
-            o.kind = 'mark'
-            delete o.pts
-          }
-        }
-      }
-    }
   }
 
   private newId() {
@@ -275,7 +259,7 @@ export class Board {
       if (v) {
         const ln = [...this.objs]
           .reverse()
-          .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000 && !this.isGridLine(o.id))
+          .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000)
         if (ln?.pts) {
           const lp = ln.pts
           for (const end of ['end', 'start'] as const) {
@@ -307,10 +291,7 @@ export class Board {
       const lastDiag = Math.hypot(last.bbox.w, last.bbox.h)
       const joinable = last.kind === 'mark' || last.kind === 'dot' || (last.kind === 'line' && !last.arrowEnd && lastDiag < 120)
       const nb = unionBox(last.bbox, b)
-      const a = cellOf(this.grids, last.bbox)
-      const c = cellOf(this.grids, b)
-      const sameCell = !a || !c || a.cell === c.cell
-      if (joinable && intersects(expand(last.bbox, 30), b) && nb.w < 300 && nb.h < 220 && sameCell) {
+      if (joinable && intersects(expand(last.bbox, 30), b) && nb.w < 300 && nb.h < 220) {
         last.kind = 'mark'
         delete last.pts
         last.strokes.push(stroke)
@@ -320,10 +301,23 @@ export class Board {
       }
     }
 
-    const o: BoardObj = { id: this.newId(), kind, strokes: [stroke], bbox: b, t }
-    if (kind === 'line') o.pts = simplify(pts, 24)
+    // 곧추선 직선이 다른 선에 닿지 않고 떠 있으면 숫자 1 같은 글자 (구분선은 테두리에 닿아 있다)
+    const k = kind === 'line' && this.floatingUpright(pts, b) ? 'mark' : kind
+    const o: BoardObj = { id: this.newId(), kind: k, strokes: [stroke], bbox: b, t }
+    if (k === 'line') o.pts = simplify(pts, 24)
     this.objs.push(o)
     return this.rewriteCheck(o, t) ?? { kind: '획', desc: `${KIND_KO[kind]} ${o.id} 추가`, t, objId: o.id }
+  }
+
+  private floatingUpright(pts: InkPoint[], b: Box) {
+    if (!(b.h > 2.5 * b.w && b.h < 280)) return false
+    const ends = [pts[0], pts[pts.length - 1]]
+    const others = this.objs.filter((o) => o.kind === 'line' || o.kind === 'box')
+    if (!others.length) return false
+    // 이미 그려진 도형(선·상자들이 둘러싼 범위) 안쪽에 있어야 한다
+    const area = others.map((o) => o.bbox).reduce((u, x) => unionBox(u, x))
+    if (!(b.x > area.x && b.x + b.w < area.x + area.w && b.y > area.y && b.y + b.h < area.y + area.h)) return false
+    return !ends.some((e) => others.some((o) => o.strokes.some((st) => st.pts.some((q) => dist(q, e) < 30))))
   }
 
   private addText(srcId: string, text: string, x: number, y: number, t: number): BoardEvent {
@@ -387,10 +381,10 @@ export class Board {
     for (const q of points) {
       let hit: BoardObj | undefined
       for (const o of this.objs) {
-        if (o.kind === 'line' || this.isGridLine(o.id)) continue
+        if (o.kind === 'line') continue
         if (inBox(q, o.bbox, 10) && (!hit || area(o.bbox) < area(hit.bbox))) hit = o
       }
-      hit ??= this.objs.find((o) => o.kind === 'line' && !this.isGridLine(o.id) && o.pts?.some((p) => dist(p, q) < 18))
+      hit ??= this.objs.find((o) => o.kind === 'line' && o.pts?.some((p) => dist(p, q) < 18))
       if (hit && passes[passes.length - 1] !== hit.id) passes.push(hit.id)
     }
     return passes.slice(0, 12)

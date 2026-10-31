@@ -231,6 +231,7 @@ export class Pipeline {
   private quick(ops: Op[], t0: number, label: string): number | undefined {
     if (!this.settings.quick || !ops.length) return undefined
     const now = performance.now()
+    this.engine.beginStep()
     for (const op of ops) this.engine.applyOp(op, now)
     const ms = now - t0
     this.log('quick', { label, ops, ms: Math.round(ms) })
@@ -397,7 +398,8 @@ export class Pipeline {
   private applyRead(read: Record<string, string>) {
     for (const [id, v] of Object.entries(read)) {
       const o = this.board.get(id)
-      if (o && (o.kind === 'mark' || o.kind === 'line') && !o.read) o.read = v
+      // 값은 손글씨에만 기억한다 (선에 값을 붙이면 밑줄을 숫자로 착각함)
+      if (o && o.kind === 'mark' && !o.read) o.read = v
     }
   }
 
@@ -413,7 +415,7 @@ export class Pipeline {
         ...(o.text ? { text: o.text } : {}),
         ...(o.arrowEnd ? { arrowEnd: o.arrowEnd } : {}),
       })),
-      grids: this.board.grids.map((g) => ({ id: g.id, rows: g.rows, cols: g.cols, lines: g.lineIds, cells: g.cells.map((c) => c.items) })),
+      overlaps: this.engine.overlaps(),
       flows: this.engine.flows.map((f) => f.along),
     }
   }

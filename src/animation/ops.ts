@@ -19,9 +19,6 @@ export type Op =
       life?: number
     }
   | { v: 'move'; id: string; to?: [number, number] | string; along?: string; dur: number }
-  | { v: 'swap'; a: string; b: string; dur: number }
-  /** 표/배열의 칸1부터 순서대로 객체를 놓는다 (교환·정렬 결과를 정확히 보여줄 때) */
-  | { v: 'arrange'; grid: string; order: string[]; dur: number }
   | { v: 'color'; id: string; color: string }
   | { v: 'scale'; id: string; k: number; dur: number }
   | { v: 'pulse'; id: string }
@@ -98,16 +95,6 @@ export function sanitizeOp(raw: unknown): Op | null {
       const along = str(o.along) ?? undefined
       if (!to && !along) return null
       return { v: 'move', id, to, along, dur: dur(o.dur) }
-    }
-    case 'swap': {
-      const a = str(o.a)
-      const b = str(o.b)
-      return a && b ? { v: 'swap', a, b, dur: dur(o.dur) } : null
-    }
-    case 'arrange': {
-      const grid = str(o.grid)
-      const order = Array.isArray(o.order) ? o.order.filter((x): x is string => typeof x === 'string') : []
-      return grid && order.length ? { v: 'arrange', grid, order, dur: dur(o.dur) } : null
     }
     case 'color': {
       const id = str(o.id)
