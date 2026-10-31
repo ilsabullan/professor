@@ -95,11 +95,12 @@ function sceneTag(o: BoardObj) {
 }
 
 function describeObjs(board: Board, engine: Engine) {
-  const lines = board.objs.map((o) => describeObj(board, engine, o) + sceneTag(o))
+  const axes = board.axes()
+  const lines = board.objs.map((o) => describeObj(board, engine, o, axes) + sceneTag(o))
   return describeList(board, engine, lines)
 }
 
-function describeObj(board: Board, engine: Engine, o: BoardObj) {
+function describeObj(board: Board, engine: Engine, o: BoardObj, axes = board.axes()) {
   const b = nowBox(board, engine, o.id)
   const off = engine.offset(o.id)
   const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
@@ -112,6 +113,7 @@ function describeObj(board: Board, engine: Engine, o: BoardObj) {
     if (under) return `${o.id} 밑줄(${under} 아래, 강조 표시. 흐름 경로 아님)`
     const p = o.pts
     const m = p[Math.floor(p.length / 2)]
+    if (axes.has(o.id)) return `${o.id} 좌표축 (${r(o.pts[0].x)},${r(o.pts[0].y)})→(${r(o.pts[o.pts.length - 1].x)},${r(o.pts[o.pts.length - 1].y)}) (흐름 경로 아님)`
     const head = o.arrowEnd ? `화살표(머리 ${o.arrowEnd === 'end' ? '끝점' : '시작점'} 쪽)` : '선'
     return `${o.id} ${head} (${r(p[0].x)},${r(p[0].y)})→(${r(m.x)},${r(m.y)})→(${r(p[p.length - 1].x)},${r(p[p.length - 1].y)}) (그린 순서)`
   }

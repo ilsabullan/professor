@@ -17,6 +17,9 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
   if (!id) return []
   switch (ev.kind) {
     case '화살표':
+      // 좌표평면에 그린 화살표(축·이동량 표시)는 흐름이 아니다. 무엇을 보여줄지는 AI가 말을 보고 정한다
+      // (실측: x축과 그래프 이동량 화살표에 TCP 패킷 같은 입자가 흘렀다)
+      if (board.axes().size) return []
       return [{ v: 'flow', along: id, n: 6, speed: 1.2, color: COLORS.cyan, rev: !!ev.rev }]
     case '덧그리기': {
       // 밑줄을 다시 그은 건 강조일 뿐 흐름이 아니다. 화살표나 긴 선일 때만 흐름

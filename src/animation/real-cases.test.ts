@@ -4,6 +4,7 @@ import { Board } from './board'
 import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
+import { quickFromBoard } from './quick'
 import { groundSpeech, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
@@ -325,4 +326,39 @@ it('064132: 장면 해석 전의 왼쪽 테두리 획이 있어도 정렬 완료
   for (const [id, read] of Object.entries({ o8: '5', o9: '3', o10: '8', o11: '1' })) b.get(id)!.read = read
   const plan = planNumericSort(b, new Engine(b, () => {}), '아무튼 정렬이 완료되면은')
   expect(plan?.cap).toBe('1, 3, 5, 8 순서로 정렬')
+})
+
+describe('좌표축 (06:48 실측: x축 화살표에 TCP 패킷 같은 입자가 흐름)', () => {
+  /** 사례를 다시 그리며 '화살표' 사건마다 즉시 반응을 모은다 */
+  const arrowQuicks = (name: string) => {
+    const b = new Board()
+    const out: { id: string; ops: Op[] }[] = []
+    for (const e of fixture(name).events) {
+      const ev = b.apply(e)
+      if (ev?.kind === '화살표' && ev.objId) out.push({ id: ev.objId, ops: quickFromBoard(ev, b) })
+    }
+    return { b, out }
+  }
+
+  it('좌표평면의 x축·이동량 화살표에는 입자를 흘리지 않는다', () => {
+    const { b, out } = arrowQuicks('real-graph-064858')
+    expect(out.length).toBeGreaterThanOrEqual(3)
+    expect(out.every((q) => q.ops.length === 0)).toBe(true)
+    expect([...b.axes()].sort()).toEqual(['o2', 'o3'])
+    expect(b.isFlowPath('o3')).toBe(false)
+  })
+
+  it('포물선 실측의 축(머리를 한 획에 그린 x축)도 축으로 본다', () => {
+    for (const name of ['real-parabola-040451', 'real-parabola-041515']) expect(boardFor(fixture(name)).axes().size, name).toBe(2)
+  })
+
+  it('TCP 화살표와 배열 테두리는 축이 아니고, TCP 화살표에는 그대로 입자가 흐른다', () => {
+    const { out } = arrowQuicks('real-tcp-012355')
+    expect(out.length).toBeGreaterThan(0)
+    expect(out.every((q) => q.ops[0]?.v === 'flow')).toBe(true)
+    for (const name of ['real-sort-012355', 'real-sort-064132', 'real-sort-022839', 'real-sort-055444', 'bubble-sort-tall-eight', 'real-blood-012355', 'real-orbit-062040']) {
+      const b = new Board()
+      for (const e of fixture(name).events) { b.apply(e); expect(b.axes().size, name).toBe(0) }
+    }
+  })
 })

@@ -287,9 +287,59 @@ export class Board {
     return this.objs.filter((o) => (o.role ? o.role === 'value' : o.kind === 'mark' || o.kind === 'text') && !this.underlineOf(o.id))
   }
 
+  /** 길고 가는 가로(h)·세로(v) 선. 좌표축 후보 (축 끝의 화살표 머리를 한 획에 그려도 되게 끝점이 아닌 상자 비율로 본다) */
+  private axisDir(o: BoardObj): 'h' | 'v' | null {
+    if (o.kind !== 'line' || this.underlineOf(o.id)) return null
+    const { w, h } = o.bbox
+    if (Math.max(w, h) < 150 || Math.min(w, h) > Math.max(w, h) * 0.2) return null
+    return w > h ? 'h' : 'v'
+  }
+
+  /** x·y 글자 또는 '축' 이름 */
+  private axisLabel(o: BoardObj) {
+    return /^[xyXY]$/.test((o.read ?? o.text ?? '').trim()) || /축|axis/i.test(o.label ?? '')
+  }
+
+  /**
+   * 좌표축: 길고 가는 가로·세로 선 한 쌍이 서로 하나씩만 가로지른다.
+   * 십자로 가운데쯤에서 만나거나(+), 끝 근처에 x·y 글자가 있어야 한다(L자).
+   * 상자·글자를 잇는 선(송신자→수신자)과 여러 칸 구분선이 지나는 배열 테두리는 축이 아니다.
+   * 실측: x축을 화살표로 그리자 즉시 반응이 TCP 패킷처럼 입자를 흘렸다.
+   */
+  axes(): Set<string> {
+    const out = new Set<string>()
+    const nodes = this.objs.filter((x) => x.kind === 'box' || x.role === 'box' || (x.kind === 'text' && (x.text ?? '').trim().length > 1))
+    const ends = (o: BoardObj) => {
+      const pts = o.pts ?? o.strokes.flatMap((s) => s.pts)
+      return [pts[0], pts[pts.length - 1]]
+    }
+    const lines = this.objs.flatMap((o) => {
+      const d = this.axisDir(o)
+      if (!d || ends(o).some((p) => nodes.some((n) => n.id !== o.id && inBox(p, n.bbox, 30)))) return []
+      return [{ o, d }]
+    })
+    const hs = lines.filter((l) => l.d === 'h').map((l) => l.o), vs = lines.filter((l) => l.d === 'v').map((l) => l.o)
+    const at = (h: BoardObj, v: BoardObj) => {
+      const x = v.bbox.x + v.bbox.w / 2, y = h.bbox.y + h.bbox.h / 2, pad = 20
+      if (x < h.bbox.x - pad || x > h.bbox.x + h.bbox.w + pad || y < v.bbox.y - pad || y > v.bbox.y + v.bbox.h + pad) return null
+      return { u: (x - h.bbox.x) / h.bbox.w, v: (y - v.bbox.y) / v.bbox.h }
+    }
+    const labelled = (o: BoardObj) => this.objs.some((x) => x.id !== o.id && this.axisLabel(x) && ends(o).some((p) => inBox(p, x.bbox, 70))) || this.axisLabel(o)
+    for (const h of hs) for (const v of vs) {
+      const c = at(h, v)
+      if (!c) continue
+      if (hs.filter((x) => at(x, v)).length > 1 || vs.filter((x) => at(h, x)).length > 1) continue
+      const cross = c.u > 0.25 && c.u < 0.75 && c.v > 0.25 && c.v < 0.75
+      if (cross || labelled(h) || labelled(v)) out.add(h.id).add(v.id)
+    }
+    return out
+  }
+
   /** 흐름 경로: 화살표, 가리킨 궤적, 또는 서로 다른 객체를 잇는 열린 선. */
   isFlowPath(id: string) {
     if (this.traces.some((t) => t.id === id)) return true
+    // 좌표축은 무엇이 흐르는 길이 아니다
+    if (this.axes().has(id)) return false
     const o = this.get(id)
     // 장면 해석이 궤도·경로라고 이름 붙인 그림 (실측: 타원으로 그린 공전 궤도가 상자/그림이라 흐름이 막혔다)
     if (o && !this.underlineOf(id) && (o.role === 'drawing' || o.role === 'box' || o.role === 'connector' || !o.role)
