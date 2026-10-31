@@ -17,6 +17,16 @@ export interface ParsedStep {
 export interface ParseResult {
   steps: ParsedStep[]
   none: boolean
+  /** AI가 이미지에서 읽은 손글씨 값 {"o7":"5"} */
+  read: Record<string, string>
+}
+
+function takeRead(j: Record<string, unknown>, into: Record<string, string>) {
+  if (j.read && typeof j.read === 'object') {
+    for (const [k, v] of Object.entries(j.read as Record<string, unknown>)) {
+      if (typeof v === 'string' || typeof v === 'number') into[k] = String(v).slice(0, 12)
+    }
+  }
 }
 
 const CAP_RE = /"cap"\s*:\s*"((?:[^"\\]|\\.)*)"/
@@ -26,9 +36,15 @@ const NONE_RE = /"none"\s*:\s*true/
 /** "ops":[ 뒤에서 완성된 {...} 객체만 꺼낸다 */
 export function scanOps(line: string): unknown[] {
   const at = line.indexOf('"ops"')
-  if (at < 0) return []
+  // 형식이 깨져 "ops" 없이 동작 객체만 나열된 줄도 살린다: {"v":"arrange",...},{"v":"pulse",...}
+  if (at < 0) return /^\{\s*"v"\s*:/.test(line) ? scanObjects(line, -1).filter((o) => !!o && typeof o === 'object' && 'v' in (o as object)) : []
   const lb = line.indexOf('[', at)
   if (lb < 0) return []
+  return scanObjects(line, lb)
+}
+
+/** start 다음부터 최상위 {...} 객체를 차례로 꺼낸다 (start가 '['면 ']'에서 멈춤) */
+function scanObjects(line: string, lb: number): unknown[] {
   const out: unknown[] = []
   let depth = 0
   let start = -1
@@ -84,6 +100,7 @@ export function parseProgress(text: string): ParseResult {
   const lines = text.split('\n')
   const endsClean = text.endsWith('\n')
   const steps: ParsedStep[] = []
+  const read: Record<string, string> = {}
   let none = false
   lines.forEach((raw, i) => {
     const closed = i < lines.length - 1 || endsClean
@@ -91,17 +108,26 @@ export function parseProgress(text: string): ParseResult {
     if (!line.startsWith('{')) return
     if (NONE_RE.test(line)) {
       none = true
+      if (closed) {
+        try {
+          takeRead(JSON.parse(line) as Record<string, unknown>, read)
+        } catch {
+          // 무시
+        }
+      }
       return
     }
     if (closed) {
       try {
         const j = JSON.parse(line) as Record<string, unknown>
+        takeRead(j, read)
         if (j.none === true) {
           none = true
           return
         }
         steps.push({
-          ops: Array.isArray(j.ops) ? j.ops : [],
+          // 동작 하나만 달랑 쓴 줄 {"v":"color",...} 도 한 단계로
+          ops: Array.isArray(j.ops) ? j.ops : typeof j.v === 'string' ? [j] : [],
           cap: typeof j.cap === 'string' ? j.cap : '',
           conf: typeof j.conf === 'number' ? j.conf : undefined,
           closed: true,
@@ -113,5 +139,5 @@ export function parseProgress(text: string): ParseResult {
     }
     steps.push(partialStep(line, closed))
   })
-  return { steps, none }
+  return { steps, none, read }
 }

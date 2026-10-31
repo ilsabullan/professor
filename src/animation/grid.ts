@@ -1,4 +1,4 @@
-import { type Box, boxCenter, inBox, straightness } from './geometry'
+import { type Box, boxCenter, inBox } from './geometry'
 
 /** 표·배열: 가로선과 세로선(또는 상자 테두리)이 서로 교차해 만든 칸들 */
 export interface GridCell {
@@ -35,36 +35,73 @@ interface Seg {
   pos: number
   from: number
   to: number
+  /** 상자의 변인지 (상자는 그 자체로 닫힌 도형) */
+  box?: boolean
 }
 
-const TOL = 28
+/** 손으로 그린 선은 모서리가 둥글고 끝이 서로 떨어져 있다. 그만큼 너그럽게 */
+const TOL = 45
 
-/** 곧고 거의 수평/수직인 선, 그리고 상자의 네 변을 선분으로 */
-function segsOf(o: GridSource): Seg[] {
+type P = { x: number; y: number }
+
+/** 꺾인 점만 남기기 (Ramer–Douglas–Peucker) */
+function corners(pts: P[], eps: number): P[] {
+  if (pts.length < 3) return pts
+  const a = pts[0]
+  const z = pts[pts.length - 1]
+  const dx = z.x - a.x
+  const dy = z.y - a.y
+  const L = Math.hypot(dx, dy) || 1
+  let best = -1
+  let bi = 0
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = Math.abs((pts[i].x - a.x) * dy - (pts[i].y - a.y) * dx) / L
+    if (d > best) {
+      best = d
+      bi = i
+    }
+  }
+  if (best <= eps) return [a, z]
+  return [...corners(pts.slice(0, bi + 1), eps).slice(0, -1), ...corners(pts.slice(bi), eps)]
+}
+
+/**
+ * 거의 수평/수직인 직선 구간과 상자의 네 변을 선분으로.
+ * 한 획으로 꺾어 그린 테두리(ㄱ·ㄴ·ㄷ자)도 꺾인 곳에서 나눠 각각 선분으로 본다.
+ */
+export function segsOf(o: GridSource): Seg[] {
   const b = o.bbox
   if (o.kind === 'box') {
     return [
-      { id: o.id, dir: 'h', pos: b.y, from: b.x, to: b.x + b.w },
-      { id: o.id, dir: 'h', pos: b.y + b.h, from: b.x, to: b.x + b.w },
-      { id: o.id, dir: 'v', pos: b.x, from: b.y, to: b.y + b.h },
-      { id: o.id, dir: 'v', pos: b.x + b.w, from: b.y, to: b.y + b.h },
+      { id: o.id, box: true, dir: 'h', pos: b.y, from: b.x, to: b.x + b.w },
+      { id: o.id, box: true, dir: 'h', pos: b.y + b.h, from: b.x, to: b.x + b.w },
+      { id: o.id, box: true, dir: 'v', pos: b.x, from: b.y, to: b.y + b.h },
+      { id: o.id, box: true, dir: 'v', pos: b.x + b.w, from: b.y, to: b.y + b.h },
     ]
   }
   if (o.kind !== 'line' || o.arrowEnd) return []
-  const pts = o.strokes[0]?.pts
-  if (!pts || pts.length < 2 || straightness(pts) < 0.9) return []
-  const a = pts[0]
-  const z = pts[pts.length - 1]
-  const dx = Math.abs(z.x - a.x)
-  const dy = Math.abs(z.y - a.y)
-  const mean = (k: 'x' | 'y') => pts.reduce((s, p) => s + p[k], 0) / pts.length
-  if (dx > 60 && dy / dx < 0.2) return [{ id: o.id, dir: 'h', pos: mean('y'), from: b.x, to: b.x + b.w }]
-  if (dy > 60 && dx / dy < 0.2) return [{ id: o.id, dir: 'v', pos: mean('x'), from: b.y, to: b.y + b.h }]
-  return []
+  const out: Seg[] = []
+  for (const s of o.strokes) {
+    const v = corners(s.pts, 14)
+    for (let i = 1; i < v.length; i++) {
+      const a = v[i - 1]
+      const z = v[i]
+      const dx = Math.abs(z.x - a.x)
+      const dy = Math.abs(z.y - a.y)
+      if (dx > 60 && dy / dx < 0.2) out.push({ id: o.id, dir: 'h', pos: (a.y + z.y) / 2, from: Math.min(a.x, z.x), to: Math.max(a.x, z.x) })
+      else if (dy > 60 && dx / dy < 0.2) out.push({ id: o.id, dir: 'v', pos: (a.x + z.x) / 2, from: Math.min(a.y, z.y), to: Math.max(a.y, z.y) })
+    }
+  }
+  return out
 }
 
-const crosses = (h: Seg, v: Seg) =>
-  v.pos > h.from - TOL && v.pos < h.to + TOL && h.pos > v.from - TOL && h.pos < v.to + TOL
+/** 서로 다른 상자끼리는 실제로 맞닿아야 연결 (떨어져 놓인 상자들은 표가 아님) */
+const tolOf = (a: Seg, b: Seg) => (a.box && b.box && a.id !== b.id ? 8 : TOL)
+
+const crosses = (h: Seg, v: Seg) => {
+  const t = tolOf(h, v)
+  return v.pos > h.from - t && v.pos < h.to + t && h.pos > v.from - t && h.pos < v.to + t
+}
 
 /**
  * 같은 위치에서 겹치거나 맞닿은 선(상자 변과 겹쳐 그린 선 등)은 하나로.
@@ -74,7 +111,7 @@ function merge(segs: Seg[]): Seg[] {
   const sorted = [...segs].sort((a, b) => a.pos - b.pos)
   const out: Seg[] = []
   for (const s of sorted) {
-    const m = out.find((o) => Math.abs(o.pos - s.pos) < 15 && s.from <= o.to + TOL && s.to >= o.from - TOL)
+    const m = out.find((o) => Math.abs(o.pos - s.pos) < 15 && s.from <= o.to + tolOf(o, s) && s.to >= o.from - tolOf(o, s))
     if (m) {
       m.pos = (m.pos + s.pos) / 2
       m.from = Math.min(m.from, s.from)
@@ -84,7 +121,10 @@ function merge(segs: Seg[]): Seg[] {
   return out.sort((a, b) => a.pos - b.pos)
 }
 
-const covers = (s: Seg, a: number, b: number) => s.from <= a + TOL && s.to >= b - TOL
+const covers = (s: Seg, a: number, b: number) => {
+  const tol = Math.max(TOL, 0.35 * (b - a))
+  return s.from <= a + tol && s.to >= b - tol
+}
 
 /** 서로 교차하는 선 묶음마다 칸을 만든다. 칸이 2개 이상일 때만 표로 본다 */
 export function detectGrids(objs: GridSource[]): Grid[] {
@@ -111,14 +151,23 @@ export function detectGrids(objs: GridSource[]): Grid[] {
     const H0 = merge(g.filter((s) => s.dir === 'h'))
     const V0 = merge(g.filter((s) => s.dir === 'v'))
     if (H0.length < 2 || V0.length < 2) continue
-    // 표 전체를 거의 가로지르는 선만 칸 경계로 (칸 안에 길게 쓴 숫자 1 같은 건 제외)
-    const spanOk = (s: Seg, a: number, b: number) => Math.min(s.to, b) - Math.max(s.from, a) >= 0.75 * (b - a)
+    // 칸 경계: 표를 대부분(80%) 가로지르거나, 절반 이상 가로지르며 끝이 다른 테두리에 닿는 선
+    // (칸 안에 길게 쓴 숫자 1은 위아래 테두리에서 떨어져 있어 제외된다)
+    const boundary = (s: Seg, a: number, b: number, others: Seg[]) => {
+      const cov = (Math.min(s.to, b) - Math.max(s.from, a)) / (b - a)
+      const touches = others.some((o) => Math.abs(s.from - o.pos) < 25 || Math.abs(s.to - o.pos) < 25)
+      return cov >= 0.8 || (cov >= 0.5 && touches)
+    }
     const yTop = H0[0].pos
     const yBot = H0[H0.length - 1].pos
     const xL = V0[0].pos
     const xR = V0[V0.length - 1].pos
-    const H = H0.filter((h) => spanOk(h, xL, xR))
-    const V = V0.filter((v) => spanOk(v, yTop, yBot))
+    // 닿는지 볼 상대는 긴 선만 (숫자 밑줄 같은 짧은 선에 닿은 건 치지 않음)
+    const long = (s: Seg, a: number, b: number) => (Math.min(s.to, b) - Math.max(s.from, a)) / (b - a) >= 0.5
+    const Hl = H0.filter((h) => long(h, xL, xR))
+    const Vl = V0.filter((v) => long(v, yTop, yBot))
+    const H = H0.filter((h) => boundary(h, xL, xR, Vl))
+    const V = V0.filter((v) => boundary(v, yTop, yBot, Hl))
     if (H.length < 2 || V.length < 2) continue
     const cells: GridCell[] = []
     for (let r = 0; r < H.length - 1; r++) {

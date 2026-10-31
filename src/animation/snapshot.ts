@@ -16,6 +16,8 @@ export function snapshotB64(board: Board, engine: Engine, maxW = 640): string {
   c.fillStyle = '#eef0e6'
   c.lineCap = 'round'
   for (const o of board.objs) {
+    // 애니메이션이 옮긴 객체는 engine.render가 지금 위치에 그린다 (원래 자리에 또 그리면 두 번 보임)
+    if (engine.isTakenOver(o.id)) continue
     drawStrokes(c, o.strokes.map((s) => s.pts))
     if (o.kind === 'text' && o.text) {
       c.font = "30px 'Nanum Pen Script', cursive"
@@ -28,6 +30,10 @@ export function snapshotB64(board: Board, engine: Engine, maxW = 640): string {
   c.fillStyle = '#ff5a46'
   c.font = `bold ${Math.round(14 / sc)}px sans-serif`
   c.textBaseline = 'alphabetic'
-  for (const o of board.objs) if (!board.isGridLine(o.id)) c.fillText(o.id, o.bbox.x - 4, o.bbox.y - 4)
+  for (const o of board.objs) {
+    if (board.isGridLine(o.id) || board.underlineOf(o.id)) continue
+    const a = engine.anim[o.id]
+    c.fillText(o.id, o.bbox.x - 4 + (a?.dx ?? 0), o.bbox.y - 4 + (a?.dy ?? 0))
+  }
   return cv.toDataURL('image/jpeg', 0.8).split(',')[1]
 }

@@ -393,6 +393,14 @@ export class Pipeline {
     this.notify()
   }
 
+  /** AI가 읽은 손글씨 값을 기억 (이미 읽은 건 덮어쓰지 않음) */
+  private applyRead(read: Record<string, string>) {
+    for (const [id, v] of Object.entries(read)) {
+      const o = this.board.get(id)
+      if (o && (o.kind === 'mark' || o.kind === 'line') && !o.read) o.read = v
+    }
+  }
+
   /** 기록용 현재 상태 요약 */
   stateForLog() {
     const r = Math.round
@@ -436,6 +444,7 @@ export class Pipeline {
       this.aiRaw = full
       const parsed = parseProgress(full)
       none = parsed.none
+      this.applyRead(parsed.read)
       parsed.steps.forEach((ps, i) => {
         if (i === 0 && ps.conf != null) {
           rec.conf = ps.conf
@@ -463,6 +472,8 @@ export class Pipeline {
       this.notifySoon()
     }
     const finish = () => {
+      // 마지막 줄은 줄바꿈 없이 끝나므로 닫힌 줄로 한 번 더 읽어 read 값을 챙긴다
+      if (last) this.applyRead(parseProgress(last + '\n').read)
       made.forEach((st) => (st.open = false))
       if (gated) return `확신 낮음(${rec.conf?.toFixed(2)})`
       if (made.some((s) => s.ops.length)) return '재생'

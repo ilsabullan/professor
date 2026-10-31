@@ -41,6 +41,8 @@ export interface BoardObj {
   t: number
   arrowEnd?: 'start' | 'end'
   replaces?: string
+  /** AI가 이미지로 한 번 읽은 손글씨 값 (한번 읽으면 기억해 다음부터 글자로 알려준다) */
+  read?: string
 }
 
 export interface ErasedObj {
@@ -106,6 +108,8 @@ export function classify(pts: Pt[]): Exclude<ObjKind, 'text'> {
   const closed = gap < Math.max(22, 0.28 * diag) && L > 1.9 * diag && b.w > 34 && b.h > 34
   if (closed) return cornersHit(pts, b) >= 3 || size >= 220 ? 'box' : 'mark'
   if (straightness(pts) >= 0.8) return diag < 40 ? 'mark' : 'line'
+  // 납작하고 넓은 획(살짝 흔들린 밑줄·가로선)은 선
+  if (b.w >= 40 && b.h < 0.25 * b.w) return 'line'
   return size < 200 ? 'mark' : 'line'
 }
 
@@ -166,6 +170,20 @@ export class Board {
     return this.grids.some((g) => g.lineIds.includes(id))
   }
 
+  /** 손글씨·글자 바로 아래에 그은 짧은 가로선이면 그 대상 id (밑줄 = 강조, 흐름 아님) */
+  underlineOf(id: string): string | undefined {
+    const o = this.get(id)
+    if (!o || o.kind !== 'line' || o.arrowEnd || this.isGridLine(id)) return undefined
+    const b = o.bbox
+    if (b.w > 180 || b.h > b.w * 0.35) return undefined
+    return this.objs.find((m) => {
+      if (m.kind !== 'mark' && m.kind !== 'text') return false
+      const bottom = m.bbox.y + m.bbox.h
+      const overlap = Math.min(b.x + b.w, m.bbox.x + m.bbox.w) - Math.max(b.x, m.bbox.x)
+      return b.y > bottom - 20 && b.y < bottom + 50 && overlap > 0.4 * Math.min(b.w, m.bbox.w)
+    })?.id
+  }
+
   /** 이벤트를 반영하고, AI를 부를 만한 사건이면 돌려준다 */
   apply(e: InkEvent): BoardEvent | null {
     let ev: BoardEvent | null = null
@@ -206,7 +224,9 @@ export class Board {
         for (const id of cell.items) {
           const o = this.get(id)
           const short = Math.hypot(o?.bbox.w ?? 0, o?.bbox.h ?? 0) < 200
-          if (o?.kind === 'line' && !o.arrowEnd && short && contains(expand(cell.box, 4), o.bbox)) {
+          // 세로로 선 짧은 획만 숫자 1로 본다 (가로 밑줄은 그대로 선)
+          const upright = !!o && o.bbox.h > o.bbox.w * 2
+          if (o?.kind === 'line' && !o.arrowEnd && short && upright && contains(expand(cell.box, 4), o.bbox)) {
             o.kind = 'mark'
             delete o.pts
           }

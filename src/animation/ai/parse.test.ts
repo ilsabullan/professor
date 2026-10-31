@@ -27,6 +27,17 @@ describe('parseProgress', () => {
     expect(parseProgress('{"conf":0.25,"ops":[').steps[0].conf).toBe(0.25)
   })
 
+  it('"ops" 없이 동작만 나열된 깨진 줄도 살린다 (실측: 8을 뒤로 보내는 배치가 버려짐)', () => {
+    const r = parseProgress('{"ops":[{"v":"pulse","id":"o9"}],"cap":"a"}\n{"v":"arrange","grid":"g1","order":["o8","o7","o10","o9"]},{"v":"pulse","id":"o9"}],"cap":"8 맨 뒤"}\n{"v":"color","id":"o9","color":"green"}\n')
+    expect(r.steps.map((s) => s.ops.length)).toEqual([1, 2, 1])
+    expect(r.steps[1].cap).toBe('8 맨 뒤')
+  })
+
+  it('읽은 손글씨 값을 꺼낸다', () => {
+    const r = parseProgress('{"conf":0.9,"ops":[],"cap":"a","read":{"o7":"5","o8":3}}\n{"none":true,"read":{"o9":"8"}}\n')
+    expect(r.read).toEqual({ o7: '5', o8: '3', o9: '8' })
+  })
+
   it('none 줄을 알아본다', () => {
     expect(parseProgress('{"none":true}\n').none).toBe(true)
   })

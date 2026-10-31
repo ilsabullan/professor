@@ -112,6 +112,11 @@ export class Engine {
     this.tweens.push({ set, from, to, t0: now, dur: Math.max(1, dur) })
   }
 
+  /** 애니메이션이 대신 그리고 있는 객체인지 (원래 필기는 숨겨짐) */
+  isTakenOver(id: string) {
+    return this.takenOver.has(id)
+  }
+
   exists(id: string) {
     return !!(this.board.get(id) || this.spawned[id])
   }
@@ -199,7 +204,7 @@ export class Engine {
       case 'swap': {
         const ca = this.center(op.a)
         const cb = this.center(op.b)
-        if (!ca || !cb) return 0
+        if (!ca || !cb || op.a === op.b) return 0
         const pairs: [string, Pt, Pt][] = [
           [op.a, cb, ca],
           [op.b, ca, cb],
@@ -216,6 +221,39 @@ export class Engine {
             this.tween((v) => (a.dy = v), a.dy, a.dy + to.y - from.y, op.dur, now)
           }
         }
+        return op.dur
+      }
+      case 'arrange': {
+        const g = this.board.grids.find((x) => x.id === op.grid) ?? this.board.grids[0]
+        if (!g) return 0
+        const cells = [...g.cells].sort((a, b) => a.r - b.r || a.c - b.c)
+        // 지금 칸에 든 객체(칸 순서대로). AI가 준 순서는 이 안에서만, 중복 없이, 빠진 건 원래 순서로 채운다
+        const members = cells.map((cell) =>
+          this.board.objs.filter((o) => {
+            if (o.kind !== 'mark' && o.kind !== 'text') return false
+            const c = this.center(o.id)
+            return !!c && c.x > cell.box.x && c.x < cell.box.x + cell.box.w && c.y > cell.box.y && c.y < cell.box.y + cell.box.h
+          }),
+        )
+        const current = members.flat().map((o) => o.id)
+        const asked = [...new Set(op.order)].filter((id) => current.includes(id))
+        const order = [...asked, ...current.filter((id) => !asked.includes(id))]
+        order.forEach((id, i) => {
+          const cell = cells[i]
+          const c = this.center(id)
+          if (!cell || !c) return
+          const to = { x: cell.box.x + cell.box.w / 2, y: cell.box.y + cell.box.h / 2 }
+          const sp = this.spawned[id]
+          if (sp) {
+            this.tween((v) => (sp.x = v), sp.x, to.x, op.dur, now)
+            this.tween((v) => (sp.y = v), sp.y, to.y, op.dur, now)
+            return
+          }
+          this.takeOver(id)
+          const a = this.A(id)
+          this.tween((v) => (a.dx = v), a.dx, a.dx + to.x - c.x, op.dur, now)
+          this.tween((v) => (a.dy = v), a.dy, a.dy + to.y - c.y, op.dur, now)
+        })
         return op.dur
       }
       case 'color': {

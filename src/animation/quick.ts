@@ -18,9 +18,13 @@ export function quickFromBoard(ev: BoardEvent, board: Board): Op[] {
   switch (ev.kind) {
     case '화살표':
       return [{ v: 'flow', along: id, n: 6, speed: 1.2, color: COLORS.cyan, rev: !!ev.rev }]
-    case '덧그리기':
-      // 표 테두리를 다시 그은 건 흐름이 아니다
-      return board.isGridLine(id) ? [] : [{ v: 'flow', along: id, n: 10, speed: 1.6, color: '#cdf0ff', rev: !!ev.rev }]
+    case '덧그리기': {
+      // 표 테두리·밑줄을 다시 그은 건 강조일 뿐 흐름이 아니다. 화살표나 긴 선일 때만 흐름
+      const o = board.get(id)
+      const long = !!o?.pts && Math.hypot(o.bbox.w, o.bbox.h) > 150
+      if (board.isGridLine(id) || board.underlineOf(id) || !(o?.arrowEnd || long)) return []
+      return [{ v: 'flow', along: id, n: 10, speed: 1.6, color: '#cdf0ff', rev: !!ev.rev }]
+    }
     case '다시 쓰기':
       return [{ v: 'pulse', id }]
     case '가리키기': {
