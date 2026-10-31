@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { SYSTEM_PROMPT } from './prompt'
+import { SCENE_PROMPT } from '../scene'
 
 export type ModelId = 'claude-haiku-5-5' | 'claude-sonnet-5-5'
 export type ThinkingMode = 'off' | 'adaptive'
@@ -101,4 +102,19 @@ export function describeError(err: unknown): { text: string; noKey: boolean; abo
   if (err instanceof Anthropic.BadRequestError) return { text: `잘못된 요청: ${err.message}`, noKey: false, aborted: false }
   if (err instanceof Anthropic.APIError) return { text: `API 오류 ${err.status ?? ''}: ${err.message}`, noKey: false, aborted: false }
   return { text: err instanceof Error ? err.message : String(err), noKey: false, aborted: false }
+}
+
+const sceneSystem: Anthropic.TextBlockParam[] = [{ type: 'text', text: SCENE_PROMPT, cache_control: { type: 'ephemeral' } }]
+
+/** 장면 해석 한 번 (스트리밍 없이 JSON 하나). 애니메이션 요청과 별개로 돈다 */
+export async function sceneCall(o: AiOptions, imageB64: string | undefined, text: string, signal: AbortSignal) {
+  const content: Anthropic.ContentBlockParam[] = []
+  if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } })
+  content.push({ type: 'text', text })
+  const msg = await getClient().messages.create(
+    { model: o.model, max_tokens: 2048, system: sceneSystem, messages: [{ role: 'user', content }], ...thinkingParams(o) },
+    { signal },
+  )
+  const out = msg.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
+  return { text: out, model: msg.model }
 }

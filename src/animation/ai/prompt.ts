@@ -1,4 +1,4 @@
-import { type Board, KIND_KO } from '../board'
+import { type Board, type BoardObj, KIND_KO, ROLE_KO } from '../board'
 import type { Engine } from '../engine'
 
 /** 바뀌지 않는 시스템 프롬프트. 캐시되므로 요청마다 바꾸지 않는다 */
@@ -76,28 +76,43 @@ function nowBox(board: Board, engine: Engine, id: string) {
   return { x: o.bbox.x + off.x, y: o.bbox.y + off.y, w: o.bbox.w, h: o.bbox.h }
 }
 
+/** 장면 해석이 정한 의미 (있을 때만) */
+function sceneTag(o: BoardObj) {
+  if (!o.role && !o.label) return ''
+  const link = o.from || o.to ? ` ${o.from ?? '?'}→${o.to ?? '?'}` : ''
+  return ` [${o.role ? ROLE_KO[o.role] : ''}${o.label ? (o.role ? ': ' : '') + o.label : ''}${link}]`
+}
+
 function describeObjs(board: Board, engine: Engine) {
-  const lines = board.objs.map((o) => {
-    const b = nowBox(board, engine, o.id)
-    const off = engine.offset(o.id)
-    const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
-    const rep = o.replaces ? ` [지운 ${o.replaces} 자리에 새로 씀]` : ''
+  const lines = board.objs.map((o) => describeObj(board, engine, o) + sceneTag(o))
+  return describeList(board, engine, lines)
+}
+
+function describeObj(board: Board, engine: Engine, o: BoardObj) {
+  const b = nowBox(board, engine, o.id)
+  const off = engine.offset(o.id)
+  const moved = Math.abs(off.x) > 1 || Math.abs(off.y) > 1 ? ' (옮겨진 지금 위치)' : ''
+  const rep = o.replaces ? ` [지운 ${o.replaces} 자리에 새로 씀]` : ''
+  const under = board.underlineOf(o.id)
+  if (under) return `${o.id} 밑줄(${under} 아래 강조. 숫자/이동 대상/흐름 경로 아님)`
+  if (o.kind === 'box') return `${o.id} 상자 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+  if (o.kind === 'line' && o.pts) {
     const under = board.underlineOf(o.id)
-    if (under) return `${o.id} 밑줄(${under} 아래 강조. 숫자/이동 대상/흐름 경로 아님)`
-    if (o.kind === 'box') return `${o.id} 상자 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
-    if (o.kind === 'line' && o.pts) {
-      const under = board.underlineOf(o.id)
-      if (under) return `${o.id} 밑줄(${under} 아래, 강조 표시. 흐름 경로 아님)`
-      const p = o.pts
-      const m = p[Math.floor(p.length / 2)]
-      const head = o.arrowEnd ? `화살표(머리 ${o.arrowEnd === 'end' ? '끝점' : '시작점'} 쪽)` : '선'
-      return `${o.id} ${head} (${r(p[0].x)},${r(p[0].y)})→(${r(m.x)},${r(m.y)})→(${r(p[p.length - 1].x)},${r(p[p.length - 1].y)}) (그린 순서)`
-    }
-    if (o.kind === 'text') return `${o.id} 글자 "${o.text}" 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})${rep}${moved}`
-    if (o.kind === 'dot') return `${o.id} 콕 찍은 점 (${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})`
-    const read = o.read ? ` "${o.read}"(읽음)` : ' (아직 안 읽음)'
-    return `${o.id} 손글씨/기호${read} 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)}) x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
-  })
+    if (under) return `${o.id} 밑줄(${under} 아래, 강조 표시. 흐름 경로 아님)`
+    const p = o.pts
+    const m = p[Math.floor(p.length / 2)]
+    const head = o.arrowEnd ? `화살표(머리 ${o.arrowEnd === 'end' ? '끝점' : '시작점'} 쪽)` : '선'
+    return `${o.id} ${head} (${r(p[0].x)},${r(p[0].y)})→(${r(m.x)},${r(m.y)})→(${r(p[p.length - 1].x)},${r(p[p.length - 1].y)}) (그린 순서)`
+  }
+  if (o.kind === 'text') return `${o.id} 글자 "${o.text}" 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})${rep}${moved}`
+  if (o.kind === 'dot') return `${o.id} 콕 찍은 점 (${r(b.x + b.w / 2)},${r(b.y + b.h / 2)})`
+  // 장면 해석이 값이 아니라고 정한 획 (그림 일부·잡획 등)
+  if (o.role && o.role !== 'value') return `${o.id} 그린 획 x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+  const read = o.read ? ` "${o.read}"(읽음)` : ' (아직 안 읽음)'
+  return `${o.id} 손글씨/기호${read} 중심(${r(b.x + b.w / 2)},${r(b.y + b.h / 2)}) x${r(b.x)} y${r(b.y)} w${r(b.w)} h${r(b.h)}${rep}${moved}`
+}
+
+function describeList(board: Board, engine: Engine, lines: string[]) {
   // 읽은 값을 지금 위치의 왼쪽→오른쪽 순서로 (자리를 바꾼 뒤에도 실제 순서가 바로 보이게)
   const readOrder = board.values()
     .filter((o) => o.read || o.text)

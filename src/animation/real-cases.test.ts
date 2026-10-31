@@ -57,4 +57,19 @@ describe('최신 실측 회귀', () => {
       expect(c.inputs.slice(firstSpeech + 1).some((e) => e.type === 'ink')).toBe(true)
     }
   })
+
+  it('TCP 실측의 크게 그린 화살표 머리 세 개를 선에 붙인다 (손글씨 "5"로 오판독되던 o5)', () => {
+    const b = boardFor(fixture('real-tcp-012355'))
+    const arrows = b.objs.filter((o) => o.arrowEnd).map((o) => o.strokes.map((s) => s.id).join('+'))
+    expect(arrows).toEqual(['s24+s25', 's30+s31', 's37+s38'])
+    expect(b.values().some((o) => o.strokes.some((s) => s.id === 's25'))).toBe(false)
+  })
+
+  it('혈액순환 실측에서 폐 윤곽 옆에 쓴 "O2"를 윤곽과 따로 둔다', () => {
+    const b = boardFor(fixture('real-blood-012355'))
+    const groups = b.objs.map((o) => o.strokes.map((s) => s.id).join('+'))
+    expect(groups).toContain('s52+s53')
+    expect(groups).toContain('s54+s55')
+  })
 })
+

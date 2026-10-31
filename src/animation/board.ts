@@ -41,6 +41,43 @@ export interface BoardObj {
   replaces?: string
   /** AI가 이미지로 한 번 읽은 손글씨 값 (한번 읽으면 기억해 다음부터 글자로 알려준다) */
   read?: string
+  /** 장면 해석(LLM)이 정한 의미. 있으면 기하 추정보다 우선한다 */
+  role?: SceneRole
+  /** 장면 해석이 붙인 이름 (예: "심장", "송신자") */
+  label?: string
+  /** 화살표·연결선이 잇는 객체, 밑줄이 꾸미는 객체 */
+  from?: string
+  to?: string
+}
+
+/** 장면 해석이 정하는 객체의 의미 */
+export type SceneRole = 'value' | 'box' | 'arrow' | 'connector' | 'frame' | 'underline' | 'drawing' | 'noise'
+
+export const ROLE_KO: Record<SceneRole, string> = {
+  value: '글자/값',
+  box: '도형/노드',
+  arrow: '화살표',
+  connector: '연결선',
+  frame: '칸/테두리',
+  underline: '밑줄',
+  drawing: '그림 일부',
+  noise: '잡획',
+}
+
+/** 장면 해석 결과 (scene.ts가 모델 응답을 이 모양으로 정리한다) */
+export interface SceneObj {
+  role?: SceneRole
+  read?: string
+  label?: string
+  head?: 'start' | 'end'
+  from?: string
+  to?: string
+}
+
+export interface SceneResult {
+  objs: Record<string, SceneObj>
+  merge: string[][]
+  split: Record<string, string[][]>
 }
 
 export interface ErasedObj {
@@ -149,6 +186,13 @@ function vShape(pts: Pt[]) {
   return { tip, a, z }
 }
 
+/** a 넓이 중 b와 겹치는 비율 */
+function overlapShare(a: Box, b: Box) {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+  return w > 0 && h > 0 ? (w * h) / Math.max(1, a.w * a.h) : 0
+}
+
 const lastT = (pts: InkPoint[]) => pts[pts.length - 1]?.t ?? performance.now()
 
 /** 편집기에서 온 필기 이벤트를 객체와 사건으로 해석한다 */
@@ -158,6 +202,8 @@ export class Board {
   erased: ErasedObj[] = []
   traces: Trace[] = []
   events: BoardEvent[] = []
+  /** 필기가 바뀔 때마다 오른다. 늦게 도착한 장면 해석을 버릴 때 쓴다 */
+  version = 0
   private nextId = 1
   private nextTrace = 1
 
@@ -177,12 +223,13 @@ export class Board {
   /** 손글씨·글자 바로 아래에 그은 짧은 가로선이면 그 대상 id (밑줄 = 강조, 흐름 아님) */
   underlineOf(id: string): string | undefined {
     const o = this.get(id)
+    if (o?.role) return o.role === 'underline' && o.to && this.get(o.to) ? o.to : undefined
     if (!o || !['line', 'mark'].includes(o.kind) || o.arrowEnd) return undefined
     const b = o.bbox
     // 짧거나 여러 번 덧그은 밑줄은 모양 분류에서 mark가 될 수 있다.
     if (b.w < 18 || b.w > 180 || b.h > b.w * 0.45) return undefined
     return this.objs.find((m) => {
-      if (m.id === id || (m.kind !== 'mark' && m.kind !== 'text') || m.t > o.t) return false
+      if (m.id === id || (m.kind !== 'mark' && m.kind !== 'text') || (m.role && m.role !== 'value') || m.t > o.t) return false
       if (m.bbox.h < Math.max(24, b.h * 2)) return false
       const bottom = m.bbox.y + m.bbox.h
       const overlap = Math.min(b.x + b.w, m.bbox.x + m.bbox.w) - Math.max(b.x, m.bbox.x)
@@ -192,7 +239,7 @@ export class Board {
 
   /** 숫자/글자 후보. 밑줄의 OCR 결과가 배열 원소에 섞이지 않게 모든 소비자가 공유한다. */
   values() {
-    return this.objs.filter((o) => (o.kind === 'mark' || o.kind === 'text') && !this.underlineOf(o.id))
+    return this.objs.filter((o) => (o.role ? o.role === 'value' : o.kind === 'mark' || o.kind === 'text') && !this.underlineOf(o.id))
   }
 
   /** 흐름 경로: 화살표, 가리킨 궤적, 또는 서로 다른 객체를 잇는 열린 선. */
@@ -200,17 +247,95 @@ export class Board {
     if (this.traces.some((t) => t.id === id)) return true
     const o = this.get(id)
     if (!o || o.kind !== 'line' || !o.pts || this.underlineOf(id)) return false
+    if (o.role) return o.role === 'arrow' || o.role === 'connector'
     if (o.arrowEnd) return true
     const ends = [o.pts[0], o.pts[o.pts.length - 1]]
     const near = ends.map((p) => this.objs
-      .filter((x) => x.id !== id && (x.kind === 'box' || x.kind === 'text'))
+      .filter((x) => x.id !== id && (x.kind === 'box' || x.kind === 'text' || x.role === 'value'))
       .filter((x) => inBox(p, x.bbox, 35))
       .sort((a, b) => area(a.bbox) - area(b.bbox))[0]?.id)
     return !!near[0] && !!near[1] && near[0] !== near[1]
   }
 
+  /**
+   * 장면 해석(LLM) 결과를 반영한다. 기하(좌표·획)는 그대로 두고 의미만 덮는다.
+   * keep: 애니메이션이 옮기고 있는 객체처럼 묶기·나누기를 하면 안 되는 id.
+   * 돌려주는 removed는 합쳐져 사라진 id (엔진에서 잊어야 함), added는 나눠져 새로 생긴 id.
+   */
+  applyScene(r: SceneResult, keep: (id: string) => boolean = () => false) {
+    const removed: string[] = []
+    const added: string[] = []
+    let changed = 0
+    for (const [id, groups] of Object.entries(r.split)) {
+      const o = this.get(id)
+      if (!o || o.kind === 'text' || keep(id) || groups.length < 2) continue
+      const byId = new Map(o.strokes.map((st) => [st.id, st]))
+      const parts = groups.map((g) => g.map((sid) => byId.get(sid)).filter((st): st is BoardStroke => !!st)).filter((g) => g.length)
+      // 모든 획을 정확히 한 번씩 나눈 경우만 받아들인다
+      if (parts.length < 2 || parts.flat().length !== o.strokes.length || new Set(parts.flat()).size !== o.strokes.length) continue
+      const at = this.objs.indexOf(o)
+      const made = parts.slice(1).map((strokes) => {
+        const n: BoardObj = { id: this.newId(), kind: 'mark', strokes, bbox: bboxOf(strokes.flatMap((st) => st.pts)), t: o.t }
+        added.push(n.id)
+        return n
+      })
+      o.strokes = parts[0]
+      o.bbox = bboxOf(o.strokes.flatMap((st) => st.pts))
+      delete o.read
+      if (o.kind === 'line') o.pts = simplify(o.strokes[0].pts, 24)
+      this.objs.splice(at + 1, 0, ...made)
+      changed++
+    }
+    // 나누기를 먼저. 같은 응답에서 나눈 객체를 다시 묶으라는 지시는 모순이므로 무시한다
+    for (const group of r.merge) {
+      if (group.some((id) => id in r.split)) continue
+      const objs = group.map((id) => this.get(id))
+      if (objs.length < 2 || objs.some((o) => !o || o.kind === 'text' || keep(o.id))) continue
+      const [head, ...rest] = objs as BoardObj[]
+      head.strokes = [...head.strokes, ...rest.flatMap((o) => o.strokes)]
+      head.bbox = bboxOf(head.strokes.flatMap((st) => st.pts))
+      head.t = Math.max(head.t, ...rest.map((o) => o.t))
+      delete head.read
+      this.objs = this.objs.filter((o) => !rest.includes(o))
+      removed.push(...rest.map((o) => o.id))
+      changed++
+    }
+    for (const [id, s] of Object.entries(r.objs)) {
+      const o = this.get(id)
+      if (!o || o.kind === 'text') continue
+      if (s.role) o.role = s.role
+      if (s.label) o.label = s.label
+      if (s.from && this.get(s.from)) o.from = s.from
+      if (s.to && this.get(s.to)) o.to = s.to
+      if (s.role === 'value') {
+        if (o.kind !== 'mark') { o.kind = 'mark'; delete o.pts; delete o.arrowEnd }
+        if (s.read) o.read = s.read
+      } else if (s.role === 'box') {
+        o.kind = 'box'
+        delete o.pts
+        delete o.read
+      } else if (s.role === 'arrow' || s.role === 'connector' || s.role === 'frame' || s.role === 'underline') {
+        if (o.kind !== 'line') {
+          const longest = [...o.strokes].sort((a, b) => pathLen(b.pts) - pathLen(a.pts))[0]
+          o.kind = 'line'
+          o.pts = simplify(longest.pts, 24)
+        }
+        delete o.read
+        if (s.role === 'arrow' && s.head) o.arrowEnd = s.head
+        if (s.role !== 'arrow') delete o.arrowEnd
+      } else if (s.role) {
+        delete o.read
+        delete o.arrowEnd
+      }
+      changed++
+    }
+    if (changed) this.version++
+    return { removed, added, changed }
+  }
+
   /** 이벤트를 반영하고, AI를 부를 만한 사건이면 돌려준다 */
   apply(e: InkEvent): BoardEvent | null {
+    if (e.type !== 'point') this.version++
     let ev: BoardEvent | null = null
     switch (e.type) {
       case 'page':
@@ -274,32 +399,31 @@ export class Board {
       }
     }
 
-    // ② 화살표 머리: 최근에 그린 선 끝에 V자 획, 꼭짓점이 선 끝을 향함
-    if (diag < 70) {
+    // ② 화살표 머리: 최근에 그린 선 끝에 V자 획, 꼭짓점이 선 끝을 향함.
+    // 실측에서 머리를 선 길이의 절반 가까이 크게 그리기도 한다 (TCP 실측 s38: 머리 대각선 161, 선 317)
+    if (diag < 200) {
       const v = vShape(pts)
-      if (v) {
-        const ln = [...this.objs]
-          .reverse()
-          .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000)
-        if (ln?.pts) {
-          const lp = ln.pts
-          for (const end of ['end', 'start'] as const) {
-            const tipEnd = end === 'end' ? lp[lp.length - 1] : lp[0]
-            const before = end === 'end' ? lp[Math.max(0, lp.length - 4)] : lp[Math.min(lp.length - 1, 3)]
-            const dx = tipEnd.x - before.x
-            const dy = tipEnd.y - before.y
-            const behind = (p: Pt) => (p.x - v.tip.x) * dx + (p.y - v.tip.y) * dy < 0
-            if (dist(v.tip, tipEnd) < 30 && behind(v.a) && behind(v.z)) {
-              ln.arrowEnd = end
-              ln.strokes.push(stroke)
-              ln.t = t
-              return {
-                kind: '화살표',
-                desc: `${ln.id} 선이 화살표가 됨 (머리: (${Math.round(tipEnd.x)},${Math.round(tipEnd.y)}) 쪽으로 이동·인과)`,
-                t,
-                objId: ln.id,
-                rev: end === 'start',
-              }
+      const ln = v && [...this.objs]
+        .reverse()
+        .find((o) => o.kind === 'line' && !o.arrowEnd && o.pts && t - o.t < 5000)
+      if (v && ln?.pts && (diag < 70 || diag < 0.6 * pathLen(ln.pts))) {
+        const lp = ln.pts
+        for (const end of ['end', 'start'] as const) {
+          const tipEnd = end === 'end' ? lp[lp.length - 1] : lp[0]
+          const before = end === 'end' ? lp[Math.max(0, lp.length - 4)] : lp[Math.min(lp.length - 1, 3)]
+          const dx = tipEnd.x - before.x
+          const dy = tipEnd.y - before.y
+          const behind = (p: Pt) => (p.x - v.tip.x) * dx + (p.y - v.tip.y) * dy < 0
+          if (dist(v.tip, tipEnd) < Math.max(30, 0.35 * diag) && behind(v.a) && behind(v.z)) {
+            ln.arrowEnd = end
+            ln.strokes.push(stroke)
+            ln.t = t
+            return {
+              kind: '화살표',
+              desc: `${ln.id} 선이 화살표가 됨 (머리: (${Math.round(tipEnd.x)},${Math.round(tipEnd.y)}) 쪽으로 이동·인과)`,
+              t,
+              objId: ln.id,
+              rev: end === 'start',
             }
           }
         }
@@ -312,7 +436,9 @@ export class Board {
       const lastDiag = Math.hypot(last.bbox.w, last.bbox.h)
       const joinable = last.kind === 'mark' || last.kind === 'dot' || (last.kind === 'line' && !last.arrowEnd && lastDiag < 120)
       const nb = unionBox(last.bbox, b)
-      if (joinable && intersects(expand(last.bbox, 30), b) && nb.w < 300 && nb.h < 220) {
+      // 큰 그림 옆에 쓴 작은 글자는 따로 둔다 (혈액순환 실측: 폐 윤곽 옆 "O2")
+      const tiny = lastDiag >= 150 && diag < 0.35 * lastDiag && overlapShare(b, last.bbox) < 0.3
+      if (joinable && !tiny && intersects(expand(last.bbox, 30), b) && nb.w < 300 && nb.h < 220) {
         last.kind = 'mark'
         delete last.pts
         last.strokes.push(stroke)

@@ -2,7 +2,8 @@ import type { Board } from './board'
 import { drawStrokes, type Engine } from './engine'
 
 /** "좌표+이미지" 모드용: 필기와 객체 id를 그린 작은 JPEG(base64) */
-export function snapshotB64(board: Board, engine: Engine, maxW = 640): string {
+/** labelAll: 장면 해석용. 긴 선·밑줄에도 id를 단다 */
+export function snapshotB64(board: Board, engine: Engine, maxW = 640, labelAll = false): string {
   const { width: W, height: H } = board.page
   const sc = Math.min(1, maxW / W)
   const cv = document.createElement('canvas')
@@ -31,7 +32,7 @@ export function snapshotB64(board: Board, engine: Engine, maxW = 640): string {
   c.font = `bold ${Math.round(14 / sc)}px sans-serif`
   c.textBaseline = 'alphabetic'
   for (const o of board.objs) {
-    if (board.underlineOf(o.id) || (o.kind === 'line' && Math.hypot(o.bbox.w, o.bbox.h) > 200)) continue
+    if (!labelAll && (board.underlineOf(o.id) || (o.kind === 'line' && Math.hypot(o.bbox.w, o.bbox.h) > 200))) continue
     const off = engine.offset(o.id)
     c.fillText(o.id, o.bbox.x - 4 + off.x, o.bbox.y - 4 + off.y)
   }

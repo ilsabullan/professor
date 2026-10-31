@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { InkBus } from '../shared/bus'
 import type { InkEvent } from '../shared/ink'
-import { type AiOptions, describeError, type ModelId, prewarm, proxyStatus, streamSteps, type ThinkingMode } from './ai/client'
+import { type AiOptions, describeError, type ModelId, prewarm, proxyStatus, sceneCall, streamSteps, type ThinkingMode } from './ai/client'
 import { parseProgress } from './ai/parse'
 import { buildUserPrompt } from './ai/prompt'
 import { Board } from './board'
@@ -10,6 +10,7 @@ import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
 import { quickFromBoard, quickFromSpeech } from './quick'
 import { describeGrounding, groundSpeech, planNumericSort, planNumericSwap, rejectUngrounded, type Grounding } from './grounding'
+import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput } from './speech'
 
@@ -24,6 +25,8 @@ export interface Settings {
   quick: boolean
   /** 이 확신보다 낮으면 재생하지 않음 */
   thr: number
+  /** 펜을 뗀 뒤 쉬면 장면 해석(LLM)으로 객체의 의미를 정함 */
+  scene: boolean
 }
 
 export type AiStatus = 'checking' | 'ready' | 'nokey' | 'locked' | 'error'
@@ -63,8 +66,9 @@ export class Pipeline {
   readonly engine: Engine
   readonly player: Player
   readonly speech: SpeechInput
+  readonly scene: SceneParser
 
-  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3 }
+  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true }
   aiStatus: AiStatus = 'checking'
   aiNote = ''
   mic: MicState = 'off'
@@ -135,6 +139,19 @@ export class Pipeline {
         this.notifySoon()
       },
     })
+    this.scene = new SceneParser({
+      board: this.board,
+      // 장면 해석은 정확도가 중요하고 1초 예산 밖이라 항상 Haiku·생각 끔·큰 이미지
+      call: (imageB64, text, signal) => sceneCall({ model: 'claude-haiku-5-5', thinking: 'off' }, imageB64, text, signal),
+      snapshot: () => snapshotB64(this.board, this.engine, 960, true),
+      keep: (id) => this.engine.isTakenOver(id),
+      log: (type, data) => this.log(type, data),
+      onApplied: ({ removed }) => {
+        if (removed.length) this.engine.forget(removed)
+        this.notifySoon()
+      },
+      onStatus: () => this.notifySoon(),
+    })
     this.speech = new SpeechInput({
       onInterim: (text, t) => this.onInterim(text, t),
       onFinal: (text, t) => this.onFinal(text, t),
@@ -150,6 +167,7 @@ export class Pipeline {
     if (opts.headless) {
       this.aiStatus = 'ready'
       this.settings.image = 'off'
+      this.settings.scene = false
       return
     }
     void this.checkProxy()
@@ -187,7 +205,7 @@ export class Pipeline {
 
   cfgKey() {
     const s = this.settings
-    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}`
+    return `${shortModel(s.model)}/${s.thinking === 'off' ? '생각끔' : '생각켬'}/${{ off: '좌표', auto: '이미지자동', on: '이미지' }[s.image]}/${s.early ? '미리' : '끝나고'}/${s.quick ? '즉시켬' : '즉시끔'}/확신${s.thr}${s.scene ? '/장면' : ''}`
   }
 
   update(patch: Partial<Settings>) {
@@ -235,6 +253,7 @@ export class Pipeline {
   private handleInk(e: InkEvent) {
     const reset = e.type === 'page' || e.type === 'clear'
     if (reset) {
+      this.scene.reset()
       this.resetAnimation()
       this.utter = []
       this.focus = { ids: [], t: 0 }
@@ -245,6 +264,7 @@ export class Pipeline {
     this.log('board', { event: ev, ...this.stateForLog() })
     if (reset) return
     if (e.type === 'erase') this.engine.forget(before.filter((id) => !this.board.get(id)))
+    if (e.type !== 'point' && this.settings.scene && this.aiStatus === 'ready') this.scene.schedule()
     if (!ev) {
       this.notify()
       return
@@ -494,6 +514,8 @@ export class Pipeline {
         ...(o.text ? { text: o.text } : {}),
         ...(o.arrowEnd ? { arrowEnd: o.arrowEnd } : {}),
         ...(o.read ? { read: o.read } : {}),
+        ...(o.role ? { role: o.role } : {}),
+        ...(o.label ? { label: o.label } : {}),
       })),
       overlaps: this.engine.overlaps(),
       flows: this.engine.flows.map((f) => f.along),

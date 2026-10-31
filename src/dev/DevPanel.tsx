@@ -145,6 +145,9 @@ export function DevPanel({
             <input type="checkbox" checked={s.early} onChange={(e) => p.update({ early: e.target.checked })} /> 말 끝나기 전 미리 부르기
           </label>
           <label className="opt">
+            <input type="checkbox" checked={s.scene} onChange={(e) => p.update({ scene: e.target.checked })} /> 장면 해석
+          </label>
+          <label className="opt">
             필기 이미지
             <select value={s.image} onChange={(e) => p.update({ image: e.target.value as typeof s.image })}>
               <option value="auto">손글씨 있을 때만</option>
@@ -168,6 +171,7 @@ export function DevPanel({
       <section>
         <h2>AI가 지금 한 일</h2>
         <div className="note">{p.aiNote}</div>
+        {s.scene && <div className="note">장면 해석: {sceneNote(p.scene.status)}</div>}
         {p.quickLog.length > 0 && (
           <div className="utt">
             {p.quickLog.map((q, i) => (
@@ -288,4 +292,11 @@ export function DevPanel({
       </section>
     </aside>
   )
+}
+
+function sceneNote(st: Pipeline['scene']['status']) {
+  const now = st.state === 'running' ? '해석 중 · ' : st.state === 'waiting' ? '대기 · ' : ''
+  const l = st.last
+  if (!l) return now + '아직 없음'
+  return `${now}마지막 ${l.ms}ms · ${l.discarded ?? `객체 ${l.objs}개${l.merged ? ` · 묶음 ${l.merged}` : ''}${l.split ? ` · 나눔 ${l.split}` : ''}`}`
 }
