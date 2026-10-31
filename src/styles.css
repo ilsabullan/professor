@@ -16,8 +16,8 @@
   --mist: #e8e3fd;
   --logo-gradient: linear-gradient(135deg, #d9c8fb 0%, #b3a4f6 45%, #8f9cf6 100%);
   --glow: 0 6px 18px rgba(124, 112, 245, 0.28);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Pretendard", "Malgun Gothic",
-    system-ui, sans-serif;
+  font-family: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", system-ui,
+    sans-serif;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -130,7 +130,7 @@ button:disabled {
 
 .library-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, 180px);
   gap: 32px 28px;
   padding: 12px clamp(20px, 4vw, 48px) 48px;
 }
@@ -367,7 +367,6 @@ button:disabled {
   min-height: 0;
   overflow: auto;
   display: flex;
-  padding: 24px 24px 72px;
 }
 
 .page-wrap {
@@ -455,34 +454,65 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-/* 발표 모드: 화면을 꽉 채운다 */
-.editor:fullscreen .stage {
-  padding: 8px 8px 64px;
-}
-
-/* ---------- 모아보기 ---------- */
+/* ---------- 모아보기 (필기 화면 위 팝업, 뒤는 블러) ---------- */
 .overview {
   position: fixed;
   inset: 0;
   z-index: 10;
   display: flex;
-  flex-direction: column;
-  background: var(--bg);
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(42, 37, 80, 0.18);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  animation: overview-fade 0.18s ease-out;
 }
 
-.overview .nav-bar {
-  border-bottom: 0.5px solid var(--separator);
+.overview-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(868px, 100%);
+  height: min(690px, 100%);
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(251, 250, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 24px 60px rgba(70, 55, 160, 0.28);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  animation: overview-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.overview-header {
+  height: 56px;
+  padding: 0 20px 0 12px;
+  background: transparent;
+  border-bottom: 1px solid var(--separator);
 }
 
 .overview-grid {
   flex: 1;
   overflow: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 28px 20px;
-  padding: 28px;
+  grid-template-columns: repeat(auto-fill, 240px);
+  justify-content: center;
+  gap: 26px 34px;
+  padding: 24px 40px;
   align-content: start;
-  justify-items: center;
+}
+
+@keyframes overview-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes overview-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
 }
 
 .overview-item {

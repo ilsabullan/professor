@@ -37,6 +37,9 @@ const HIGHLIGHT_SIZES = [0.012, 0.02, 0.03];
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
 const SAVE_DELAY = 400;
+// 페이지 둘레 여백 (피그마 02 필기 화면 기준). 발표 모드에서는 화면을 꽉 채운다
+const STAGE_PAD = { x: 76, y: 72 };
+const STAGE_PAD_FULLSCREEN = { x: 8, y: 8 };
 const EMPTY: Stroke[] = [];
 
 type History = { undo: Stroke[][]; redo: Stroke[][] };
@@ -251,7 +254,10 @@ export function Editor({
     };
   }, []);
 
-  const fitWidth = page ? Math.max(100, Math.min(box.w - 48, ((box.h - 48) * page.width) / page.height)) : 0;
+  const pad = fullscreen ? STAGE_PAD_FULLSCREEN : STAGE_PAD;
+  const fitWidth = page
+    ? Math.max(100, Math.min(box.w - pad.x * 2, ((box.h - pad.y * 2) * page.width) / page.height))
+    : 0;
   const isInk = tool === "pen" || tool === "highlighter";
   const colors = tool === "highlighter" ? HIGHLIGHT_COLORS : PEN_COLORS;
   const color = tool === "highlighter" ? highlightColor : penColor;
@@ -318,7 +324,7 @@ export function Editor({
         )}
       </div>
 
-      <div className="stage" ref={stageRef}>
+      <div className="stage" ref={stageRef} style={{ padding: `${pad.y}px ${pad.x}px` }}>
         {page && fitWidth > 0 ? (
           <div className="page-wrap">
             <PageCanvas
