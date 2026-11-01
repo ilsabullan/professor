@@ -49,3 +49,34 @@ it('"8일 뒤로"는 8이 뒤로 가는 말이다 (받아쓰기가 조사 "이"�
   expect(groundSpeech(b, '아니, 그러니까 8일 뒤로 가겠죠?', ['o3', 'o4'], 'a', 'final')).toMatchObject({ move: true, targets: ['o3', 'o4'] })
   expect(groundSpeech(b, '일 뒤로 가겠죠', [], 'a', 'final').targets).toEqual([])
 })
+
+describe('03~05시 실측 정렬 발화 (사례 없던 세션)', () => {
+  const row = (page: string, values: string[]) => {
+    const b = new Board()
+    b.apply({ type: 'page', info: { page: 1, width: 1280, height: 720, text: page } })
+    for (const [i, text] of values.entries()) b.apply({ type: 'text', page: 1, id: `s${i}`, text, x: i * 150 + 200, y: 300, t: 0 })
+    return b
+  }
+
+  it('045500: "1이 앞으로 가게 될 거예요"는 1과 앞 칸의 이동이다 ("앞으로"가 이동 말에 안 걸렸음)', () => {
+    const b = row('배열 [5,3,8,1]. 인접한 두 값을 비교해 왼쪽이 크면 교환한다.', ['3', '5', '1', '8'])
+    expect(groundSpeech(b, '일이라고 오랑 비교해가지고 1이 앞으로 가게 될 거예요.', [], 'a', 'final')).toMatchObject({ move: true, targets: ['o3', 'o2'] })
+    expect(groundSpeech(b, '1이 앞으로 가게 되고요.', ['o3', 'o2'], 'a', 'final').move).toBe(true)
+    expect(groundSpeech(b, '앞으로 할 것은 비교예요', [], 'a', 'final').move).toBe(false)
+  })
+
+  it('035550: 정렬 교안이 아니어도 숫자가 한 줄이면 "팔이 뒤로 갈/올 거예요"를 8과 다음 칸의 이동으로 본다', () => {
+    const b = row('송신자→네트워크→수신자로 패킷이 흐른다.', ['5', '3', '8', '1'])
+    for (const text of ['팔이 뒤로 갈 거예요.', '그러니까 팔이 뒤로 올 거예요.']) {
+      expect(groundSpeech(b, text, [], 'a', 'final')).toMatchObject({ move: true, targets: ['o3', 'o4'] })
+    }
+  })
+
+  it('021538·034920: "다 끝내게 되면", "정렬이 되면"은 정렬 완료다', () => {
+    const b = row('배열 [5,3,8,1].', ['5', '3', '8', '1'])
+    expect(groundSpeech(b, '정렬을 다 끝내게 되면 어떻게 되죠?', [], 'a', 'final').sort).toBe(true)
+    expect(groundSpeech(b, '에게 더 체중 정렬이 되면은?', [], 'a', 'final').sort).toBe(true)
+    expect(groundSpeech(b, '정렬이 안 된 배열이 있어요', [], 'a', 'final').sort).toBe(false)
+    expect(groundSpeech(b, '정렬이 되면서 큰 값이 뒤로 가요', [], 'a', 'final').sort).toBe(false)
+  })
+})
