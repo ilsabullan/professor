@@ -4,8 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { Pipeline } from '../animation/pipeline'
 import { InkBus } from '../shared/bus'
 import type { InkEvent } from '../shared/ink'
-import { replayInputs, rebaseInk, type RecordedInput } from './replay'
+import { applyRecordedScene, replayInputs, rebaseInk, type RecordedInput } from './replay'
 import { passes, type Check, type Frame } from './scoring'
+import type { Op } from '../animation/ops'
 
 /**
  * AI 동작 채점 (실제 API 호출, 돈 듦). `npm run eval` 로만 돈다.
@@ -106,19 +107,23 @@ async function runOnce(c: Case) {
   }
   const got: string[] = []
   let moved: string[] = []
+  let sends: string[] = []
   let before = ''
   p.log = (type, data) => {
     if (process.env.EVAL_DEBUG && ['rejected', 'final', 'final-dup', 'request'].includes(type)) {
       const d = data as Record<string, any>
-      console.log('DBG', type, type === 'request' ? `${d.rec?.kind} ${d.rec?.status} | ${String(d.raw ?? '').replace(/\n/g, ' / ').slice(0, 160)}` : JSON.stringify(type === 'rejected' ? { reason: d.reason, ops: d.ops } : d).slice(0, 200))
+      console.log('DBG', type, type === 'request' ? `${d.rec?.kind} ${d.rec?.status} | ${String(d.raw ?? '').replace(/\n/g, ' / ').slice(0, 500)}` : JSON.stringify(type === 'rejected' ? { reason: d.reason, ops: d.ops } : d).slice(0, 200))
     }
     if (type === 'applied') for (const op of data.ops as { v: string; id?: string }[]) {
       if (op.v === 'move' && op.id) moved.push(op.id)
     }
+    if (type === 'applied') for (const op of data.ops as Op[]) {
+      if (op.v === 'send') sends.push(`${op.ack ? 'a' : ''}${op.n}${op.drop ? `x${op.drop}` : ''}`)
+    }
   }
   const capture = (): string => JSON.stringify({
     order: order(p, ids), before, moved: [...new Set(moved)],
-    overlap: p.engine.overlaps().map((x) => x.join('·')), flows: p.engine.flows.map((f) => f.along),
+    overlap: p.engine.overlaps().map((x) => x.join('·')), flows: p.engine.flows.map((f) => f.along), sends,
   } satisfies Frame)
   if (TIMED && c.inputs?.length) {
     let utterance = -1
@@ -139,6 +144,7 @@ async function runOnce(c: Case) {
         utterance++
         before = order(p, ids)
         moved = []
+        sends = []
       }
     })
     await settle(p)
@@ -151,6 +157,8 @@ async function runOnce(c: Case) {
     : e.type === 'point' ? e.points.at(-1)?.t ?? 0 : 't' in e ? e.t : 0
   const offset = performance.now() - Math.max(0, ...c.events.map(inkTime))
   for (const e of c.events) bus.emit(rebaseInk(e, inkTime(e) + offset))
+  // 다 그린 뒤 실측의 장면 해석을 차례로 반영한다 (화살표의 출발·도착, 이름표)
+  for (const input of c.inputs ?? []) if (input.type === 'scene') applyRecordedScene(p, input)
   label()
   await settle(p, 1000)
   p.resetAnimation()
@@ -159,6 +167,7 @@ async function runOnce(c: Case) {
   for (let i = 0; i <= last; i++) {
     before = order(p, ids)
     moved = []
+    sends = []
     await speak(p, c.speech[i])
     await settle(p)
     got[i] = capture()
@@ -176,7 +185,7 @@ describe.skipIf(!process.env.EVAL)('AI 동작 채점', () => {
         cases.map(async (c) => {
           const runs = await Promise.all(Array.from({ length: RUNS }, () => runOnce(c)))
           for (const k of c.checks) {
-            const expected = [k.order, k.flows ? `흐름 ${k.flows.join(',')}` : '', k.noFlow ? '흐름 없음' : '', k.unchanged ? '이동 없음' : '', k.forbiddenMoved ? `이동 금지 ${k.forbiddenMoved.join(',')}` : ''].filter(Boolean).join(' ')
+            const expected = [k.order, k.flows ? `흐름 ${k.flows.join(',')}` : '', k.noFlow ? '흐름 없음' : '', k.unchanged ? '이동 없음' : '', k.forbiddenMoved ? `이동 금지 ${k.forbiddenMoved.join(',')}` : '', k.sends != null ? `보냄 "${k.sends}"` : '', k.drop ? '버림' : '', k.ack ? '응답' : '', k.motion ? '흐름/전송' : ''].filter(Boolean).join(' ')
             results.push({ case: c.name, after: k.after, speech: c.speech[k.after], expected, check: k, got: runs.map((r) => r[k.after]) })
           }
         }),
@@ -186,7 +195,7 @@ describe.skipIf(!process.env.EVAL)('AI 동작 채점', () => {
       }
       const show = (g: string) => {
         const s = JSON.parse(g) as Frame
-        return [s.order, s.overlap.length ? `겹침 ${s.overlap.join(',')}` : '', s.flows.length ? `흐름 ${s.flows.join(',')}` : '', s.moved.length ? `이동 ${s.moved.join(',')}` : ''].filter(Boolean).join(' ')
+        return [s.order, s.overlap.length ? `겹침 ${s.overlap.join(',')}` : '', s.flows.length ? `흐름 ${s.flows.join(',')}` : '', s.moved.length ? `이동 ${s.moved.join(',')}` : '', s.sends?.length ? `보냄 ${s.sends.join(' ')}` : ''].filter(Boolean).join(' ')
       }
       let pass = 0
       let total = 0

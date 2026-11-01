@@ -3,6 +3,11 @@ import { clamp } from './geometry'
 /** AI(와 즉시 반응 규칙)가 쓰는 기본 동작 */
 export type Op =
   | { v: 'flow'; along: string; n: number; speed: number; color: string; rev: boolean }
+  /**
+   * 경로를 따라 패킷 n개를 한 줄로 한 번만 보낸다 (계속 흐르는 flow와 달리 개수가 보인다).
+   * drop: 뒤쪽 몇 개가 at(버퍼·라우터) 자리에서 버려짐. ack: 응답 패킷(작은 초록 점)
+   */
+  | { v: 'send'; along: string; n: number; color: string; rev: boolean; drop: number; at?: string; ack?: boolean }
   | { v: 'stop'; along?: string; id?: string }
   | {
       v: 'spawn'
@@ -75,6 +80,23 @@ export function sanitizeOp(raw: unknown): Op | null {
         speed: clamp(num(o.speed, 1), 0.2, 4),
         color: color(o.color, PARTICLE),
         rev: o.rev === true,
+      }
+    }
+    case 'send': {
+      const along = str(o.along)
+      if (!along) return null
+      const ack = o.ack === true
+      const n = Math.round(clamp(num(o.n, 1), 1, 16))
+      const at = str(o.at) ?? undefined
+      return {
+        v: 'send',
+        along,
+        n,
+        color: color(o.color, ack ? COLORS.green : PARTICLE),
+        rev: o.rev === true,
+        drop: Math.round(clamp(num(o.drop, 0), 0, n)),
+        ...(at ? { at } : {}),
+        ...(ack ? { ack } : {}),
       }
     }
     case 'stop': {
