@@ -22,7 +22,7 @@ const numberWords: Record<string, string> = { 영: '0', 일: '1', 이: '2', 삼:
 const SWAP = /바[뀌뀔꾸꿀꿔뀝뀐꿉꾼]|교환/
 // 실측(06시~07시)에서 놓친 표현: 바뀝니다·바뀐다·이동했어요·이동을 해볼게요·떨어져·돌아요·움직여줘·왔다 갔다·올라가면·내려와요
 const MOVE = new RegExp([
-  SWAP.source, '옮[기겨긴길]', '이동(?:[하해한할시했되됐됩돼]|을\\s*[해하시]|\\s*$|[.?!,])', '(?:앞|뒤)로.{0,8}(가|보내)', '넣', '꺼내', '밀[려리어]',
+  SWAP.source, '옮[기겨긴길]', '이동(?:[하해한할시했되됐됩돼]|을\\s*[해하시]|\\s*$|[.?!,])', '(?:앞으|뒤)로.{0,8}(?:[가갈간갑]|보내|[오올와])', '넣', '꺼내', '밀[려리어]',
   '떨어[지져진질뜨트]', '움직[여이인일]', '돌[아고면며려리]', '돈다', '도는', '회전', '빙글', '굴러', '흔들', '왔다\\s*갔다', '올라[가와갑간갈]', '내려[가와오갑간갈]',
   '날아', '튀[어었]', '당[겨기]', '되돌', '제자리', 'push', 'pop', 'enqueue', 'dequeue',
 ].join('|'), 'i')
@@ -40,6 +40,18 @@ export function mentionedValues(text: string): string[] {
   // 실측 ASR의 '팔 과일을 비교'는 비교 문맥에서만 8과 1로 해석한다.
   if (/(비교|비유)/.test(text) && /(?:팔|8)\s*과일/.test(text)) values.push('8', '1')
   return [...new Set(values)]
+}
+
+/**
+ * 인접 비교 규칙("8이 뒤로")을 쓸 칠판: 정렬 교안이거나, 숫자 3개 이상이 한 줄에 놓였다.
+ * 실측 035550: TCP 교안 위에 배열을 그려 정렬해 "8이 뒤로 갈 거예요"를 해석하지 못함
+ */
+function rowOfNumbers(board: Board, engine?: Engine) {
+  if (/버블|인접|정렬/.test(board.page.text ?? '')) return true
+  const nums = board.values().filter((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))
+  if (nums.length < 3) return false
+  const ys = nums.map((o) => engine?.settled(o.id)?.y ?? o.bbox.y + o.bbox.h / 2)
+  return Math.max(...ys) - Math.min(...ys) <= 0.6 * Math.max(...nums.map((o) => o.bbox.h))
 }
 
 export function groundSpeech(board: Board, text: string, focus: string[], id: string, phase: Grounding['phase'], engine?: Engine): Grounding {
@@ -69,9 +81,10 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   // 새 비교를 특정하지 못했다면 이전 쌍으로 잘못 넘기지 않는다.
   if (!ordinals.length && compare && mentions.length >= 2 && named.length !== mentions.length) targets = []
   const negated = NEGATED.test(actionText)
-  const sort = !negated && /정[렬리]|조율/.test(text) && /(완료|완성|끝까지|끝나|최종)/.test(text)
+  // "다 끝내게 되면", "정렬이 되면"도 완료 (실측 021538, 034920). "정렬되면서"는 진행 중
+  const sort = !negated && /정[렬리]|조율/.test(text) && /(완료|완성|끝까지|끝[나내난]|최종|다\s*되|(?:정[렬리]|진열)이?\s*되면(?!서))/.test(text)
   const move = !negated && (sort || MOVE.test(actionText))
-  if (/버블|인접/.test(board.page.text ?? '')) {
+  if (rowOfNumbers(board, engine)) {
     // "앞에 있는 값을 먼저 비교"는 처음 두 칸. 읽은 값과 일치할 때만 해석한다.
     const line = cells.length >= 2 ? cells : ordered
     if (/앞에.{0,25}먼저\s*비교/.test(actionText) && named.length === 1 && line.slice(0, 2).some((o) => o.id === named[0])) {
@@ -101,7 +114,7 @@ export function planNumericSwap(board: Board, engine: Engine, g: Grounding): { o
   const [a, b] = g.targets.map((id) => board.values().find((o) => o.id === id))
   if (!a || !b || ![a, b].every((o) => /^-?\d+(\.\d+)?$/.test(o.read ?? o.text ?? ''))) return null
   const explicitSwap = SWAP.test(g.text)
-  const adjacentSort = /버블|인접/.test(board.page.text ?? '') && /뒤로|앞으로/.test(g.text)
+  const adjacentSort = rowOfNumbers(board, engine) && /뒤로|앞으로/.test(g.text)
   if (!explicitSwap && !adjacentSort) return null
   const pa = engine.settled(a.id)!, pb = engine.settled(b.id)!
   if (Math.abs(pa.y - pb.y) > Math.max(a.bbox.h, b.bbox.h) * .6) return null
@@ -403,7 +416,9 @@ export function planNumericSort(board: Board, engine: Engine, text: string): { o
   const [minX, maxX] = [row[0].p.x, row[row.length - 1].p.x]
   const border = (o: (typeof values)[number]) => !o.read && !o.text && o.bbox.w < o.bbox.h * .2 && o.bbox.h >= h * .8
     && (engine.settled(o.id)!.x < minX || engine.settled(o.id)!.x > maxX)
-  if (values.some((o) => !numbers.includes(o) && !border(o) && Math.abs(engine.settled(o.id)!.y - row[0].p.y) < h * .6)) return null
+  // 숫자 밑의 읽지 않은 납작한 표시(밑줄류)는 값이 아니다 (실측 034920: 8 밑의 표시 때문에 정렬을 못 함)
+  const flat = (o: (typeof values)[number]) => !o.read && !o.text && o.bbox.h < h * .4 && o.bbox.w > o.bbox.h
+  if (values.some((o) => !numbers.includes(o) && !border(o) && !flat(o) && Math.abs(engine.settled(o.id)!.y - row[0].p.y) < h * .6)) return null
   const direction = /내림|큰\s*값부터|큰\s*수부터/.test(text) ? -1 : 1
   const sorted = [...row].sort((a, b) => direction * (a.v - b.v))
   const ops: Op[] = sorted.flatMap((r, i) => r.o.id === row[i].o.id ? []
