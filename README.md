@@ -1,9 +1,59 @@
-# professor
+# 살아있는 칠판 · 교수자 (professor)
 
 교수자 화면: 강의 자료(PDF) 위에 필기하고 말하면, AI가 "시간에 따라 변하는 설명"을 알아채 필기 위에서 움직이게 한다.
 필기 앱 작업 범위는 [docs/scope.md](docs/scope.md) 참고.
 
 디자인: [Figma - 교수자 필기 화면](https://www.figma.com/design/varfI1eZkbR9f7FQ8DUCLy) (문서 목록, 필기 화면, 모아보기, 모아보기 팝업, 컴포넌트)
+
+## 무엇을 하나
+
+버블 정렬 페이지에 `5 3 8 1`을 써 두고 "5랑 3, 둘이 바뀌겠죠?"라고 말하면, 교수자가 쓴 5와 3이 칠판 위에서 자리를 바꾼다.
+
+- 화살표를 그으면 그 위로 입자가 흐르고, 레이저 포인터로 가리키면 점이 궤적을 따라간다.
+- 정렬, 패킷 전송, 혈액 순환, 궤도, 진자, 그래프 평행 이동처럼 과정이 있는 설명을 대상으로 한다.
+- **말한 만큼만 움직인다.** "비교해 볼까요?"처럼 결과를 말하지 않은 문장에는 강조만 한다.
+- **근거 없는 이동은 하지 않는다.** 말에 나오지 않은 대상을 옮기거나 도착지가 겹치면 보류한다.
+- 목표 속도는 행동 후 1초 안 반응이다.
+
+## 동작 방식
+
+```mermaid
+flowchart LR
+  pen["필기·레이저<br/>PDF 편집기"] --> bus["InkBus<br/>필기 데이터 계약"]
+  mic["마이크<br/>실시간 받아쓰기"] --> speech["발화 해석"]
+  bus --> board["칠판 해석<br/>획 → 숫자·화살표·밑줄"]
+  board --> quick["즉시 반응<br/>AI 없음"]
+  board --> pipe["Pipeline<br/>계기·예약·취소"]
+  speech --> pipe
+  pipe --> ai["Claude<br/>동작 대본 스트리밍"]
+  ai --> gate["검증 게이트<br/>근거·겹침 검사"]
+  quick --> engine["Engine<br/>Canvas 재생"]
+  gate --> engine
+  engine --> overlay["PDF 위 오버레이"]
+```
+
+| 단계 | 하는 일 | 주요 파일 |
+| --- | --- | --- |
+| 입력 | 편집기가 `page`·`stroke`·`erase`·`point` 이벤트를 보내고, 마이크는 받아쓰기 엔진으로 들어간다 | `src/screens/Editor.tsx`, `src/lib/inkBridge.ts`, `src/animation/speech.ts`, `src/animation/cloudstt.ts` |
+| 칠판 해석 | 획을 객체(글자·선·상자)로 묶고 화살표·밑줄·덧그리기를 가린다. 펜을 쉬면 LLM이 객체의 역할을 정한다 | `src/animation/board.ts`, `src/animation/scene.ts` |
+| 계기와 예약 | 입력을 계기(획, 말, 가리키기…)로 바꾸고 짧게 묶은 뒤 AI를 부른다. 새 입력이 오면 낡은 요청을 취소한다 | `src/animation/pipeline.ts` |
+| 즉시 반응 | 화살표·가리키기·"흘러/막혀" 같은 확실한 신호는 AI 없이 바로 움직인다 | `src/animation/quick.ts` |
+| AI 대본 | 칠판 상태·발화·필기 이미지를 보내고 한 줄에 하나씩 JSON 단계를 받는다 | `src/animation/ai/` |
+| 검증 게이트 | 발화에서 대상·이동 의도·부정을 뽑아 근거 없는 동작을 막는다. 두 수 교환과 정렬은 코드가 직접 계획한다 | `src/animation/grounding.ts` |
+| 재생 | 동작 9종(`flow` `stop` `spawn` `move` `color` `scale` `pulse` `fade` `label`)을 실행하고, 움직이는 동안 원본 획은 숨긴다 | `src/animation/engine.ts`, `src/animation/ops.ts` |
+
+## 기술 스택
+
+| 영역 | 사용 |
+| --- | --- |
+| 화면 | React 19, TypeScript 7, Vite 8, pdf.js(`pdfjs-dist`), lucide-react |
+| 저장 | 브라우저 IndexedDB (필기만 저장) |
+| 애니메이션 | Canvas 2D 오버레이, `requestAnimationFrame` |
+| AI | Anthropic SDK, Claude Haiku 5.5 기본 (Sonnet 5.5 선택 가능), 스트리밍, 시스템 프롬프트 캐시 |
+| 받아쓰기 | 브라우저 Web Speech API, OpenAI Realtime(`gpt-live-transcribe`), Gemini Live(`gemini-3.8-live`). 외부 엔진은 AudioWorklet PCM16 → 서버 WebSocket 프록시 |
+| 서버 | 개발: Vite 미들웨어(HTTPS, 접속 코드, API 프록시, 기록 저장). 운영: 의존성 없는 Node 서버 `server/prod.ts` |
+| 테스트 | Vitest 5 (단위·실측 회귀), 실측 사례 리플레이 평가 |
+| 배포 | Docker(`node:24-alpine`), GHCR, 라즈베리파이 deployd (`linux/arm64`) |
 
 ## 실행
 
@@ -22,20 +72,37 @@ npm run dev            # https://localhost:5173
 기본 코드는 새 서버 프로세스에서 만들어진다.
 이 Mac에서 HTTPS 없이 보려면 `DEV_HTTP=1 npm run dev`.
 
+`OPENAI_API_KEY`, `GEMINI_API_KEY`는 선택이다. 테스트 패널에서 받아쓰기 엔진을 바꿀 때만 쓴다.
+
+## 명령
+
+| 명령 | 내용 |
+| --- | --- |
+| `npm run dev` | 개발 서버 (HTTPS, 실측 기록 저장) |
+| `npm run typecheck` | 타입 검사 |
+| `npm test` | 단위·실측 회귀 테스트. API를 부르지 않는다 |
+| `npm run build` | 타입 검사 후 `dist/` 빌드 |
+| `npm start` | 운영 서버로 `dist/` 실행 |
+| `npm run eval` | 실측 사례를 실제 AI로 재생해 채점. **API 요금이 든다** |
+| `node scripts/log-inventory.mjs` | 실측 기록에서 사례로 뽑을 만한 구간 찾기 |
+| `node scripts/extract-case.mjs logs/<세션>.jsonl <이름> "<문제>"` | 실측 기록 → `cases/<이름>.json` |
+| `node scripts/render-case.mjs <이름>` | 사례의 필기를 그림으로 그려 라벨 붙일 때 보기 |
+| `node scripts/watch-submit.mjs` | 테스트 패널의 ‘보내기’를 감시해 한 줄씩 알림 |
+
+`npm run eval`은 환경 변수로 범위를 줄인다.
+
+```bash
+EVAL_RUNS=1 EVAL_CASE=real-sort-013822 npm run eval            # 한 사례, 1회
+EVAL_MODE=timed EVAL_RUNS=1 EVAL_CASE=real-sort-013822 npm run eval  # 원래 시간 간격으로 재생
+```
+
+기본은 모든 라벨된 사례 × 3회, 통과 기준 90%(`EVAL_MIN_PASS`). 보고서는 `logs/eval-*.md`에 남는다.
+
 ## 화면
 
 - 문서 목록에서 PDF를 올리고 차시를 연다.
 - 필기 화면 왼쪽은 PDF 편집기, 그 페이지 위에 애니메이션이 겹쳐 그려진다.
 - 오른쪽은 애니메이션 테스트 패널(대본, 말하기, 실험 설정, 측정). 상단의 플라스크 버튼으로 켜고 끈다.
-
-## 배포
-
-라즈베리파이 deployd로 배포한다 (`deploy.json`, `Dockerfile`). deployd는 `ghcr.io/hurdoo/` 이미지만 받으므로 이미지는 포크 `HURDOO/professor`에 연결된 `ghcr.io/hurdoo/ilsabullan-professor`에 올린다. 주소는 https://ilsabullan-professor.app.hurdoo.kr/?k=<접속 코드>.
-
-- 운영 서버는 `server/prod.ts` (`npm start`). 의존성 없이 `dist/`를 내주고 `/healthz`, `/api/status`, `/api/anthropic/*`, `/api/stt/<업체>`를 처리한다.
-- 공개 주소라서 `/api/*`는 `?k=<접속 코드>`로 한 번 연 기기만 쓸 수 있다.
-- 값은 deployd 대시보드 Secrets에만 넣는다. 필수: `ILSABULLAN_ACCESS_CODE`(공백 없는 6~128자). 선택: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
-- 테스트 기록(`/api/log`)과 원본 녹음은 개발 서버에서만 저장된다.
 
 ## 구조
 
@@ -50,8 +117,13 @@ npm run dev            # https://localhost:5173
 | `src/shared/ink.ts` | **필기 데이터 계약** (PDF 편집기 ↔ 애니메이션 레이어) |
 | `src/shared/bus.ts` | 두 쪽을 잇는 이벤트 통로 `InkBus` |
 | `src/animation/` | 애니메이션 레이어: 필기 해석, 즉시 반응, AI 호출, 재생 |
+| `src/evals/` | 실측 사례 리플레이와 채점 (`npm run eval`) |
 | `src/dev/` | 테스트 패널, 대본(가상 교안), 테스트 기록 |
 | `src/testboard/` | 예전 테스트용 필기 캔버스 (지금은 화면에 쓰지 않음) |
+| `server/` | 접속 코드, 기록 저장소, 운영 서버(`prod.ts`) |
+| `scripts/` | 실측 기록 → 사례 도구 |
+| `cases/` | 실측에서 뽑은 평가 사례 |
+| `docs/` | 작업 범위, 보정 기록, 분석·설계 문서 |
 
 ## 편집기와 애니메이션 연결
 
@@ -66,6 +138,43 @@ npm run dev            # https://localhost:5173
 - 즉시 반응: 화살표·덧그리기·가리키기·"흘러/막혀" 같은 신호는 AI 없이 바로 움직인다.
 - AI 반응: Haiku 5.5, 생각 끔, 스트리밍. 완성된 JSON 단계의 동작을 함께 검증한 뒤 재생한다. 시스템 프롬프트는 캐시하고 페이지를 열 때 미리 데운다.
 - 측정 패널에서 설정별 중앙값·90%·1초 이내 비율을 보고 CSV로 저장할 수 있다.
+
+## 개선 순환
+
+정확도는 실제 수업처럼 써 본 기록으로 고친다.
+
+1. `npm run dev`로 열고 테스트 패널에서 대본을 골라 실제로 필기하며 말한다.
+2. AI 반응마다 ✓/✗(메모)를 남기고 ‘보내기’를 누른다. ‘기록 저장 확인됨’을 본 뒤 탭을 닫는다.
+3. `log-inventory`로 구간을 고르고 `extract-case`로 사례를 뽑는다. `render-case` 그림을 보며 손글씨 정답(`read`)과 발화 뒤 기대 결과(`checks`)를 채운다.
+4. 고친 뒤 `npm test`, 필요하면 `npm run eval`로 확인한다.
+
+규칙:
+
+- 사례는 실측 기록에서만 뽑는다. 직접 지어낸 필기·발화로 사례를 만들지 않는다.
+- 모호한 발화의 의도는 정답으로 추측하지 않는다.
+- `npm run eval`은 검토된 손글씨 값을 넣어 주므로 실제 손글씨 판독·마이크 정확도 평가가 아니다. 한 번의 통과를 일반 정확도로 해석하지 않는다.
+- `.env`, `logs/`는 커밋하지 않는다.
+
+자세한 실행 규칙과 평가의 의미는 [docs/CALIBRATION.md](docs/CALIBRATION.md).
+
+## 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [docs/scope.md](docs/scope.md) | 교수자 필기 파트 작업 범위 |
+| [docs/CALIBRATION.md](docs/CALIBRATION.md) | 실측 보정 규칙, 평가 방법과 결과 |
+| [docs/ACCURACY_ANALYSIS.md](docs/ACCURACY_ANALYSIS.md) | 실측 정확도 저하 원인 분석 |
+| [docs/recognition-redesign.md](docs/recognition-redesign.md) | 인식과 실행 분리 설계 (구현 전 제안) |
+| [docs/recognition-implementation-plan.md](docs/recognition-implementation-plan.md) | 위 설계의 실행 계획 (미구현) |
+
+## 배포
+
+라즈베리파이 deployd로 배포한다 (`deploy.json`, `Dockerfile`). deployd는 `ghcr.io/hurdoo/` 이미지만 받으므로 이미지는 포크 `HURDOO/professor`에 연결된 `ghcr.io/hurdoo/ilsabullan-professor`에 올린다. 주소는 https://ilsabullan-professor.app.hurdoo.kr/?k=<접속 코드>.
+
+- 운영 서버는 `server/prod.ts` (`npm start`). 의존성 없이 `dist/`를 내주고 `/healthz`, `/api/status`, `/api/anthropic/*`, `/api/stt/<업체>`를 처리한다.
+- 공개 주소라서 `/api/*`는 `?k=<접속 코드>`로 한 번 연 기기만 쓸 수 있다.
+- 값은 deployd 대시보드 Secrets에만 넣는다. 필수: `ILSABULLAN_ACCESS_CODE`(공백 없는 6~128자). 선택: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+- 테스트 기록(`/api/log`)과 원본 녹음은 개발 서버에서만 저장된다.
 
 ## 실측 기록
 
