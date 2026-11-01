@@ -315,3 +315,48 @@ it('"다시 돌아오세요"는 움직인 것이 있을 때만 모델 없이 되
   expect(planRestore(e, g)?.ops).toEqual([{ v: 'restore', dur: 700 }])
   expect(planRestore(e, groundSpeech(b, '응답이 돌아오면', [], 'r', 'final'))).toBeNull()
 })
+
+describe('패킷 보내기 (send)', () => {
+  const withPath = () => {
+    const { b, e } = setup()
+    e.applyOp({ v: 'spawn', id: 'p1', shape: 'arrow', from: [100, 100], to: [600, 100], text: '', color: '#fff', r: 8, w: 60, h: 40 }, 0)
+    return { b, e }
+  }
+
+  it('개수·버림을 정리한다', () => {
+    expect(sanitizeOp({ v: 'send', along: 'o4', n: 40, drop: 99 })).toMatchObject({ v: 'send', n: 16, drop: 16, rev: false })
+    expect(sanitizeOp({ v: 'send', along: 'o4', ack: true })).toMatchObject({ n: 1, ack: true, color: '#7be596', drop: 0 })
+    expect(sanitizeOp({ v: 'send', n: 2 })).toBeNull()
+  })
+
+  it('패킷은 간격을 두고 한 번 지나가고, 뒤쪽 패킷만 버퍼 자리에서 빨갛게 떨어진다', () => {
+    const { e } = withPath()
+    const dur = e.applyOp({ v: 'send', along: 'p1', n: 4, color: '#cdf0ff', rev: false, drop: 1 }, 0)
+    const b = e.bursts[0]
+    expect(dur).toBeGreaterThan(b.travel + 2 * b.gap)
+    const line = e.linePts('p1')!
+    const at = (k: number, t: number) => (e as unknown as { packet: (...a: unknown[]) => { x: number; y: number; color: string } | null }).packet(b, k, line, t)
+    expect(at(1, b.gap - 1)).toBeNull() // 아직 출발 전
+    // 끝까지 가는 앞쪽 패킷
+    expect(at(0, b.travel * 0.9)!.x).toBeGreaterThan(500)
+    // 버려지는 마지막 패킷: 버퍼 자리(기본 60%)를 넘지 않고 빨갛게 아래로
+    const late = at(3, 3 * b.gap + b.travel * 0.9)!
+    expect(late.color).toBe('#ff5a46')
+    expect(late.x).toBeLessThan(100 + 500 * 0.65)
+    expect(late.y).toBeGreaterThan(100)
+    e.tick(dur + 2000, 0.05)
+    expect(e.bursts).toHaveLength(0)
+  })
+
+  it('보낸 기록을 AI에게 알려준다 (응답은 데이터 수에서 뺀다)', () => {
+    const { e } = withPath()
+    e.applyOp({ v: 'send', along: 'p1', n: 4, color: '#cdf0ff', rev: false, drop: 1 }, 0)
+    e.applyOp({ v: 'send', along: 'p1', n: 3, color: '#7be596', rev: true, drop: 0, ack: true }, 0)
+    expect(e.describe()).toContain('p1 4개(1개 버려짐) → p1 응답 3개. 직전에 보낸 데이터 패킷 수: 4')
+  })
+
+  it('경로가 아닌 객체로는 보내지 않는다', () => {
+    const { e } = setup()
+    expect(e.validateStep([{ v: 'send', along: 'o1', n: 2, color: '#cdf0ff', rev: false, drop: 0 }])).toBe('연결 경로가 아닌 선')
+  })
+})

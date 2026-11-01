@@ -470,11 +470,29 @@ function orderedCounts(text: string): number[] {
  * 이미 패킷을 보낸 뒤 "두 배씩 / 절반으로 / 하나씩 늘려요"라고 하면 보낼 개수를 계산해서 단계마다 보낸다.
  * (실측 062040·041959: 모델이 "2개 4개" 중 하나만 보내거나 5개의 절반을 2개로 보내고 '하나씩 늘림'은 빠뜨렸다)
  * 버림·응답은 어디서 넘치는지 등 판단이 필요해 모델에 맡긴다.
+ * 처음 보내는 것은 흐르던 경로가 하나뿐이고 개수를 하나만 말했을 때만 여기서 정한다.
  */
-export function planWindow(engine: Engine, g: Grounding): { ops: Op[]; cap: string; more: { ops: Op[]; cap: string }[] } | null {
-  if (g.phase !== 'final' || !RECKON.test(g.text) || /버려|버리|버린|손실\s*(?:이|가)?\s*(?:나|생|발생)|넘치|넘쳐|넘친/.test(g.text)) return null
+export function planWindow(engine: Engine, g: Grounding, board?: Board): { ops: Op[]; cap: string; more: { ops: Op[]; cap: string }[] } | null {
+  if (g.phase !== 'final') return null
   const last = engine.sent.filter((x) => !x.ack).at(-1)
-  if (!last || !engine.linePts(last.along)) return null
+  // "넘친 패킷은 버려져요": 직전 수의 두 배를 보내고 뒤쪽 1/4이 버퍼에서 버려진다 (실측 041959: 모델이 흐름만 다시 쓰거나 빨간 흐름을 냄)
+  if (/버려|버리|버린|넘치|넘쳐|넘친|손실/.test(g.text) && !/절반|반으로/.test(g.text)) {
+    const along = last?.along ?? (engine.flows.length === 1 ? engine.flows[0].along : null)
+    if (!along || !engine.linePts(along)) return null
+    const n = Math.min(16, last ? last.n * 2 : 8)
+    const buffer = board?.objs.find((o) => /버퍼|라우터|buffer|router/i.test(`${o.label ?? ''} ${o.text ?? ''} ${o.read ?? ''}`))
+    const op: Op = { v: 'send', along, n, color: '#cdf0ff', rev: last?.rev ?? engine.flows[0]?.rev ?? false, drop: Math.max(1, Math.round(n / 4)), ...(buffer ? { at: buffer.id } : {}) }
+    return { ops: [op], cap: `버퍼가 넘쳐 ${op.drop}개 버려짐`, more: [] }
+  }
+  // 흐르던 경로가 하나뿐일 때 "처음에는 하나만 보낼 거야"는 그 경로로 말한 개수만 보낸다
+  // (실측 재현 062040: 같은 말에 흐름 n=1을 다시 써서 개수가 안 보임)
+  if (!last && !RECKON.test(g.text) && /보내|보낼|보냈|전송/.test(g.text) && engine.flows.length === 1) {
+    const counts = orderedCounts(g.text).filter((n) => n >= 1 && n <= 16)
+    const f = engine.flows[0]
+    if (counts.length !== 1 || !engine.linePts(f.along)) return null
+    return { ops: [{ v: 'send', along: f.along, n: counts[0], color: '#cdf0ff', rev: f.rev, drop: 0 }], cap: `패킷 ${counts[0]}개 보냄`, more: [] }
+  }
+  if (!RECKON.test(g.text) || !last || !engine.linePts(last.along)) return null
   const halve = /절반|반으로/.test(g.text)
   const inc = /하나씩|한\s*개씩|1\s*개?씩/.test(g.text)
   const dbl = /두\s*배|배씩|배로/.test(g.text)

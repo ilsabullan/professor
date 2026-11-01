@@ -496,7 +496,8 @@ export class Engine {
         const c = op.at ? this.center(op.at) : null
         let dropAt = c ? fractionOn(line, c) : 0.6
         if (op.rev) dropAt = 1 - dropAt
-        dropAt = clamp(dropAt, 0.15, 0.95)
+        // 넘치는 곳은 중간 라우터다. 송신자 바로 앞에서 버리지 않는다
+        dropAt = clamp(dropAt, 0.35, 0.95)
         this.bursts.push({ along: op.along, n: op.n, drop: op.drop, dropAt, color: op.color, rev: op.rev, ack: !!op.ack, t0: now, travel, gap })
         this.sent.push({ along: op.along, n: op.n, drop: op.drop, ack: !!op.ack, rev: op.rev })
         if (this.sent.length > 8) this.sent.shift()
