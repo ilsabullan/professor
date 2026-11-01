@@ -37,6 +37,8 @@ interface Case {
   speech: string[]
   events: InkEvent[]
   inputs?: RecordedInput[]
+  /** 순차 채점에서도 실측의 장면 해석을 반영 (그림이 화살표·상자로 읽혀야 의미가 있는 사례) */
+  replayScene?: boolean
 }
 
 const dir = join(__dirname, '../../cases')
@@ -109,7 +111,20 @@ async function runOnce(c: Case) {
   let moved: string[] = []
   let sends: string[] = []
   let before = ''
+  // 시간 재현: 발화 경계는 파이프라인이 실제로 확정한 때다. 말이 멈추면 기록된 확정보다 먼저 스스로 확정하고
+  // 그 뒤 기록된 확정은 중복으로 버려지는데, 기록 기준으로 나누면 이미 실행된 동작이 앞 발화로 들어간다.
+  // 기록된 확정보다 하나까지만 앞설 수 있다.
+  let utterance = -1
+  let inputFinals = 0
+  const boundary = () => {
+    if (utterance >= 0) got[utterance] = capture()
+    utterance++
+    before = order(p, ids)
+    moved = []
+    sends = []
+  }
   p.log = (type, data) => {
+    if (TIMED && type === 'final' && utterance < inputFinals) boundary()
     if (process.env.EVAL_DEBUG && ['rejected', 'final', 'final-dup', 'request'].includes(type)) {
       const d = data as Record<string, any>
       console.log('DBG', type, type === 'request' ? `${d.rec?.kind} ${d.rec?.status} | ${String(d.raw ?? '').replace(/\n/g, ' / ').slice(0, 500)}` : JSON.stringify(type === 'rejected' ? { reason: d.reason, ops: d.ops } : d).slice(0, 200))
@@ -126,7 +141,6 @@ async function runOnce(c: Case) {
     overlap: p.engine.overlaps().map((x) => x.join('·')), flows: p.engine.flows.map((f) => f.along), sends,
   } satisfies Frame)
   if (TIMED && c.inputs?.length) {
-    let utterance = -1
     const advance = async (ms: number) => {
       const end = performance.now() + ms
       let last = performance.now()
@@ -140,11 +154,9 @@ async function runOnce(c: Case) {
     await replayInputs(p, bus, c.inputs, advance, (input) => {
       label() // 라벨을 공급하는 시간 재현 평가. 실제 OCR 평가는 아니다.
       if (input.type === 'final' && input.text?.trim()) {
-        if (utterance >= 0) got[utterance] = capture()
-        utterance++
-        before = order(p, ids)
-        moved = []
-        sends = []
+        inputFinals++
+        // 파이프라인이 이 확정을 따로 기록하지 않은 경우(빈 말 등)에도 번호를 맞춘다
+        while (utterance < inputFinals - 1) boundary()
       }
     })
     await settle(p)
@@ -157,8 +169,9 @@ async function runOnce(c: Case) {
     : e.type === 'point' ? e.points.at(-1)?.t ?? 0 : 't' in e ? e.t : 0
   const offset = performance.now() - Math.max(0, ...c.events.map(inkTime))
   for (const e of c.events) bus.emit(rebaseInk(e, inkTime(e) + offset))
-  // 다 그린 뒤 실측의 장면 해석을 차례로 반영한다 (화살표의 출발·도착, 이름표)
-  for (const input of c.inputs ?? []) if (input.type === 'scene') applyRecordedScene(p, input)
+  // replayScene 사례만: 다 그린 뒤 실측의 장면 해석(화살표의 출발·도착, 이름표)을 차례로 반영한다.
+  // 다 그린 칠판에 중간 해석을 덧입히면 실측과 다른 칠판이 되는 사례도 있어(040451) 사례별로 고른다
+  if (c.replayScene) for (const input of c.inputs ?? []) if (input.type === 'scene') applyRecordedScene(p, input)
   label()
   await settle(p, 1000)
   p.resetAnimation()

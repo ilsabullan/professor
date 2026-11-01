@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, alongToShift, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, alongToShift, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, planWindow, rejectUngrounded, spokenCounts } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -578,5 +578,65 @@ describe('05:04 실측: 포물선을 화살표·축을 "따라" 옮긴 응답', 
     expect(op.v).toBe('move')
     expect(op.by![0]).toBeGreaterThan(150) // 오른쪽으로 화살표 길이(약 194px)
     expect(Math.abs(op.by![1])).toBeLessThan(10) // y로 내려가지 않음
+  })
+})
+
+describe('TCP 혼잡 제어 (04:19·06:20 실측: 시연이 한 번도 끝까지 안 됨)', () => {
+  it('송신자·수신자를 잇는 화살표와 가운데 네트워크 세로선은 좌표축이 아니다 (062040)', () => {
+    const c = fixture('real-tcp-062040')
+    const b = new Board()
+    for (const e of c.events) { b.apply(e); expect([...b.axes()]).toEqual([]) }
+    // "처음에는 하나만 보낼 거고" 때 AI가 고른 화살표 o7 (실측 당시 장면 해석 반영)
+    const at = boardAt(c, 1420)
+    expect(at.axes().size).toBe(0)
+    expect(at.isFlowPath(realIds(c, at, 1420)('o7'))).toBe(true)
+  })
+
+  it('끝을 갈고리로 꺾은 송신자→수신자 화살표는 "패킷이 흘러와요" 때 이미 경로다 (041959)', () => {
+    const c = fixture('real-tcp-041959')
+    const b = boardAt(c, 113)
+    const arrow = b.objs.find((o) => o.strokes.some((s) => s.id === 's7'))!
+    expect(b.isFlowPath(arrow.id)).toBe(true)
+    const g = groundSpeech(b, '패키지 이렇게 흘러 와요', [], 'none', 'final')
+    expect(rejectUngrounded([{ v: 'send', along: arrow.id, n: 1, color: '#cdf0ff', rev: false, drop: 0 }], g, b)).toBeNull()
+  })
+
+  it('응답만 말했을 때 데이터 패킷을 앞질러 보내지 않고, 말한 개수와 다른 수는 보내지 않는다', () => {
+    const b = boardAt(fixture('real-tcp-041959'), 445)
+    const send = (n: number, ack = false): Op => ({ v: 'send', along: 'o4', n, color: '#cdf0ff', rev: ack, drop: 0, ...(ack ? { ack } : {}) })
+    const g = (text: string) => groundSpeech(b, text, [], 'none', 'final')
+    // 실측 재현 응답: 중복 인식된 "응답이 돌아오면"에 2개를 미리 보내 "2개 4개"에서 4만 남음
+    expect(rejectUngrounded([send(2)], g('응답이 돌아오면'), b)).toBe('패킷을 보낼 근거가 없음')
+    expect(rejectUngrounded([send(1, true)], g('응답이 돌아오면'), b)).toBeNull()
+    expect(rejectUngrounded([send(1, true)], g('처음에는 하나만 보낼 거야'), b)).toBe('응답을 말하지 않음')
+    expect(rejectUngrounded([send(3)], g('처음에는 하나만 보낼 거야'), b)).toBe('말한 패킷 개수와 다름')
+    expect(rejectUngrounded([send(1)], g('처음에는 하나만 보낼 거야'), b)).toBeNull()
+    expect(rejectUngrounded([send(8)], g('넘친 새끼든 버려져요'), b)).toBeNull()
+    expect(spokenCounts('그 다음부터는 2개 4개 두 배씩 늘 거예요')).toEqual([2, 4])
+    expect(spokenCounts('그 다음부턴 하나씩 늘려요')).toEqual([])
+  })
+
+  it('보낸 기록에서 두 배·절반·하나씩 늘리기를 단계별로 계산한다', () => {
+    const b = boardAt(fixture('real-tcp-041959'), 445)
+    const e = new Engine(b, () => {})
+    const plan = (text: string) => {
+      const p = planWindow(e, groundSpeech(b, text, [], 'none', 'final'))
+      return p && [p, ...p.more].map((s) => (s.ops[0] as Extract<Op, { v: 'send' }>).n)
+    }
+    expect(plan('그 다음부터는 2개 4개 두 배씩 늘 거예요.')).toBeNull() // 아직 보낸 적 없음: 모델에 맡김
+    expect(plan('처음에는 하나만 보낼 거야')).toBeNull() // 흐르는 경로도 없음
+    e.applyOp({ v: 'flow', along: 'o4', n: 6, speed: 1.2, color: '#5ec8e6', rev: false }, 0)
+    expect(plan('처음에는 하나만 보낼 거야')).toEqual([1])
+    expect(e.flows).toHaveLength(1)
+    e.applyOp({ v: 'send', along: 'o4', n: 1, color: '#cdf0ff', rev: false, drop: 0 }, 0)
+    expect(e.flows).toHaveLength(0) // 개수가 보이게 같은 경로의 흐름은 멈춤
+    e.applyOp({ v: 'send', along: 'o14', n: 1, color: '#7be596', rev: false, drop: 0, ack: true }, 0)
+    expect(plan('그 다음부터는 2개 4개 두 배씩 늘 거예요.')).toEqual([2, 4])
+    e.applyOp({ v: 'send', along: 'o4', n: 8, color: '#cdf0ff', rev: false, drop: 3, at: 'o20' }, 0)
+    expect(plan('손실을 알았으면 보내는 양을 절반으로 줄이고 그 다음부턴 하나씩 늘려요')).toEqual([4, 5, 6])
+    // 8개 다음 "버려져요": 16개 중 4개를 버퍼(장면 해석 이름 '버퍼 칸') 자리에서 버림
+    const drop = planWindow(e, groundSpeech(b, '넘친 새끼든 버려져요', [], 'none', 'final'), b)!.ops[0] as Extract<Op, { v: 'send' }>
+    expect(drop).toMatchObject({ n: 16, drop: 4, at: 'o6' })
+    expect(plan('응답이 돌아오면')).toBeNull()
   })
 })

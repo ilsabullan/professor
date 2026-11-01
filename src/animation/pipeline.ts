@@ -530,7 +530,7 @@ export class Pipeline {
     try {
       const g = trig.grounding
       const restore = g?.phase === 'final' ? planRestore(this.engine, g) : null
-      const win = !restore && g ? planWindow(this.engine, g) : null
+      const win = !restore && g ? planWindow(this.engine, g, this.board) : null
       const plan = restore ?? win ?? (g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null)
       if (plan) {
         rec.model = restore ? 'local-restore' : win ? 'local-window' : g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'

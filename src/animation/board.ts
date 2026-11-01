@@ -353,9 +353,19 @@ export class Board {
       const pts = o.pts ?? o.strokes.flatMap((s) => s.pts)
       return [pts[0], pts[pts.length - 1]]
     }
+    const cands = new Set(this.objs.filter((o) => this.axisDir(o)).map((o) => o.id))
+    // 양 끝이 서로 다른 큰 그림(원·상자 등)에 닿으면 둘을 잇는 선이다 (실측 062040: 송신자·수신자 원을 잇는 화살표를
+    // 가운데의 네트워크 세로선과 함께 축으로 잡아 패킷을 못 보냄). 포물선처럼 한 그림이 양 끝을 다 덮는 것은 괜찮다
+    const shapes = this.objs.filter((x) => !cands.has(x.id) && x.bbox.w * x.bbox.h >= 1600 && !(x.kind === 'text' && (x.text ?? '').trim().length <= 1))
+    const joins = (o: BoardObj) => {
+      const [a, b] = ends(o).map((p) => shapes.filter((x) => x.id !== o.id && inBox(p, x.bbox, 20)).map((x) => x.id))
+      return a.some((x) => !b.includes(x)) && b.some((x) => !a.includes(x))
+    }
     const lines = this.objs.flatMap((o) => {
       const d = this.axisDir(o)
       if (!d || ends(o).some((p) => nodes.some((n) => n.id !== o.id && inBox(p, n.bbox, 30)))) return []
+      if ((o.role === 'arrow' || o.role === 'connector') && o.from && o.to && o.from !== o.to) return []
+      if (joins(o)) return []
       return [{ o, d }]
     })
     const hs = lines.filter((l) => l.d === 'h').map((l) => l.o), vs = lines.filter((l) => l.d === 'v').map((l) => l.o)
@@ -387,12 +397,15 @@ export class Board {
     if (!o || o.kind !== 'line' || !o.pts || this.underlineOf(id)) return false
     if (o.role) return o.role === 'arrow' || o.role === 'connector'
     if (o.arrowEnd) return true
-    const ends = [o.pts[0], o.pts[o.pts.length - 1]]
-    const near = ends.map((p) => this.objs
+    // 끝을 갈고리(머리 날개 하나)로 꺾어 그리면 마지막 점은 머리 끝에서 비껴난다. 시작점에서 가장 먼 점도 끝으로 본다
+    // (실측 041959: 송신자→수신자 화살표가 수신자 상자에서 37px 떨어진 갈고리 끝 때문에 연결선이 아니었음)
+    const tip = o.pts.reduce((m, p) => (dist(p, o.pts![0]) > dist(m, o.pts![0]) ? p : m), o.pts[0])
+    const nodeAt = (p: Pt) => this.objs
       .filter((x) => x.id !== id && (x.kind === 'box' || x.kind === 'text' || x.role === 'value'))
       .filter((x) => inBox(p, x.bbox, 35))
-      .sort((a, b) => area(a.bbox) - area(b.bbox))[0]?.id)
-    return !!near[0] && !!near[1] && near[0] !== near[1]
+      .sort((a, b) => area(a.bbox) - area(b.bbox))[0]?.id
+    const start = nodeAt(o.pts[0])
+    return !!start && [o.pts[o.pts.length - 1], tip].some((p) => { const n = nodeAt(p); return !!n && n !== start })
   }
 
   /**
@@ -432,6 +445,11 @@ export class Board {
       // 서로 다른 값으로 읽힌 손글씨는 묶지 않는다 (실측: 밑줄을 긋자 "5"와 "3"을 한 객체로 합침)
       const reads = new Set(objs.map((o) => o!.read ?? r.objs[o!.id]?.read).filter(Boolean))
       if (reads.size >= 2) continue
+      // 화살표를 값·그림에 흡수하지 않는다. 몸통과 머리 획을 묶는 것처럼 결과도 화살표일 때만 묶는다
+      // (실측 062040: 송신자→수신자 화살표를 수신자 안 낙서와 묶어 값으로 만들어 패킷 경로가 사라짐)
+      const linkRole = (role?: string) => role === 'arrow' || role === 'connector'
+      const isLink = (o: BoardObj) => !!o.arrowEnd || linkRole(o.role) || linkRole(r.objs[o.id]?.role)
+      if (objs.some((o) => isLink(o!)) && !linkRole(r.objs[objs[0]!.id]?.role ?? objs[0]!.role)) continue
       const [head, ...rest] = objs as BoardObj[]
       head.strokes = [...head.strokes, ...rest.flatMap((o) => o.strokes)]
       head.bbox = bboxOf(head.strokes.flatMap((st) => st.pts))
