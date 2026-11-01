@@ -180,6 +180,29 @@ describe('어미만 따로 확정된 조각 (실측 083151)', () => {
   })
 })
 
+describe('동작을 말한 뒤의 잡담 (실측 081421)', () => {
+  it('이동 요청 중 동작 없는 확정 발화는 그 요청을 취소하지 않고 끝난 뒤 부른다', async () => {
+    const { p } = setup()
+    const r = await say(p, '5와 3을 옮겨요')
+    const n = requests.length
+    await say(p, '아, 여튼 사진은 이렇게')
+    expect(r.signal.aborted).toBe(false)
+    expect(requests.length).toBe(n)
+    r.text(swap() + '\n')
+    r.finish()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(p.engine.settled('o1')?.x).toBe(358)
+    expect(requests.length).toBe(n + 1)
+  })
+
+  it('새 동작을 말하면 이전 이동 요청을 취소한다', async () => {
+    const { p } = setup()
+    const r = await say(p, '5와 3을 옮겨요')
+    await say(p, '8과 1을 옮겨요')
+    expect(r.signal.aborted).toBe(true)
+  })
+})
+
 describe('04시 실측: 쪼개진 받아쓰기', () => {
   it('"서로 바꿔요"가 두 조각에 연달아 들어와도 3과 1을 한 번만 바꾼다 (logs 042636)', async () => {
     const { p } = setup()

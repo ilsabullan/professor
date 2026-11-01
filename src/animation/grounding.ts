@@ -162,31 +162,54 @@ export function measureTranslation(ops: Op[], text: string, board: Board, now: n
 }
 
 /**
- * 공전: 궤도 안쪽 객체를 제자리에서 돌리는 응답을, 궤도 위에 있는 객체가 궤도를 따라 도는 이동으로 바꾼다.
- * 실측 084606: "태양 주위를 도는 지구"라고 한 뒤 "지구가 돌면서"에 가운데 큰 원(태양)을 돌렸다.
- * "자전"이라고 말했으면 제자리 회전이 맞으므로 그대로 둔다.
+ * 공전: 잘못 고른 회전을 궤도 위 객체가 궤도를 따라 도는 이동으로 바꾼다. "자전"이라고 말했으면 그대로 둔다.
+ * - 궤도 안쪽 객체를 제자리에서 돌림 (실측 084606: "태양 주위를 도는 지구"에 태양을 돌림)
+ * - 궤도 자체를 가운데 객체 기준으로 돌림 (실측 085717: 궤도 타원을 태양 둘레로 돌림)
+ * 궤도 위 객체에 겹쳐 그린 것(자전축 등)은 같이 붙어서 움직인다.
  */
 export function repairOrbit(ops: Op[], text: string, board: Board): Op[] {
   if (/자전/.test(text) || !/돌|공전|궤도|주위/.test(text)) return ops
   const center = (b: { x: number; y: number; w: number; h: number }) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 })
-  const paths = board.objs.filter((o) => o.kind === 'line' && o.pts && o.pts.length >= 3 && !board.underlineOf(o.id))
-  return ops.map((op) => {
-    if (op.v !== 'rotate' || !op.loop || (op.about !== undefined && op.about !== op.id)) return op
-    const hub = board.get(op.id)
-    if (!hub) return op
-    const c = center(hub.bbox)
-    const path = paths.find((p) => p.id !== hub.id && c.x > p.bbox.x && c.x < p.bbox.x + p.bbox.w && c.y > p.bbox.y && c.y < p.bbox.y + p.bbox.h)
-    if (!path?.pts) return op
-    const pts = path.pts
-    const near = (o: typeof hub) => {
+  const inside = (q: { x: number; y: number }, b: { x: number; y: number; w: number; h: number }) => q.x > b.x && q.x < b.x + b.w && q.y > b.y && q.y < b.y + b.h
+  const pathPts = (id: string) => {
+    const o = board.get(id)
+    if (!o || board.underlineOf(id) || o.kind === 'text' || o.kind === 'dot') return null
+    const pts = o.pts ?? (o.kind === 'box' || board.isFlowPath(id) ? o.strokes[0]?.pts : undefined)
+    return pts && pts.length >= 3 ? pts : null
+  }
+  const out: Op[] = []
+  for (const op of ops) {
+    if (op.v !== 'rotate' || !op.loop) { out.push(op); continue }
+    let path: string | undefined
+    let hub: string | undefined
+    const aboutId = typeof op.about === 'string' && op.about !== op.id ? op.about : undefined
+    const aboutPt = aboutId ? (board.get(aboutId) ? center(board.get(aboutId)!.bbox) : null) : Array.isArray(op.about) ? { x: op.about[0], y: op.about[1] } : null
+    const self = board.get(op.id)
+    if (self && aboutPt && pathPts(op.id) && inside(aboutPt, self.bbox)) {
+      path = op.id
+      hub = aboutId
+    } else if (self && !aboutPt) {
+      const c = center(self.bbox)
+      path = board.objs.find((p) => p.id !== op.id && pathPts(p.id) && p.kind === 'line' && inside(c, p.bbox))?.id
+        ?? board.objs.find((p) => p.id !== op.id && pathPts(p.id) && inside(c, p.bbox) && p.bbox.w * p.bbox.h > 2 * self.bbox.w * self.bbox.h)?.id
+      hub = op.id
+    }
+    const pts = path ? pathPts(path) : null
+    if (!path || !pts) { out.push(op); continue }
+    const near = (o: NonNullable<typeof self>) => {
       const q = center(o.bbox)
       const d = Math.min(...pts.slice(1).map((b, i) => distToSegment(q, pts[i], b)))
       return d <= Math.max(40, Math.hypot(o.bbox.w, o.bbox.h) / 2 + 20)
     }
-    const riders = board.objs.filter((o) => o.id !== hub.id && o.id !== path.id && o.kind !== 'line' && o.kind !== 'text' && near(o))
-    if (riders.length !== 1) return op
-    return { v: 'move', id: riders[0].id, along: path.id, loop: true, dur: op.dur }
-  })
+    const overlap = (a: NonNullable<typeof self>, b: NonNullable<typeof self>) =>
+      a.bbox.x < b.bbox.x + b.bbox.w + 10 && b.bbox.x < a.bbox.x + a.bbox.w + 10 && a.bbox.y < b.bbox.y + b.bbox.h + 10 && b.bbox.y < a.bbox.y + a.bbox.h + 10
+    const riders = board.objs.filter((o) => o.id !== hub && o.id !== path && o.kind !== 'text' && !board.underlineOf(o.id) && near(o))
+    const body = riders.filter((o) => o.kind !== 'line' && o.kind !== 'dot')
+    // 궤도 위 덩어리가 하나일 때만 (겹쳐 그린 자전축 등은 같은 덩어리)
+    if (!body.length || !riders.every((o) => overlap(o, body[0]))) { out.push(op); continue }
+    for (const o of riders) out.push({ v: 'move', id: o.id, along: path, loop: true, dur: op.dur })
+  }
+  return out
 }
 
 /**
@@ -226,6 +249,80 @@ export function repairPendulum(ops: Op[], board: Board): Op[] {
   const first = swings[0]
   const out = ops.map((op) => op.v === 'rotate' && ids.has(op.id) && far(op.about) ? { ...op, about: at } : op)
   return [...out, ...strings.map((o) => ({ v: 'rotate' as const, id: o.id, deg: first.deg, about: at, dur: first.dur, loop: true }))]
+}
+
+type P = { x: number; y: number }
+function segCross(a: P, b: P, c: P, d: P): P | null {
+  const den = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x)
+  if (Math.abs(den) < 1e-9) return null
+  const t = ((c.x - a.x) * (d.y - c.y) - (c.y - a.y) * (d.x - c.x)) / den
+  const u = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / den
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) } : null
+}
+/** 두 꺾은선의 교점 중 near에 가장 가까운 것 */
+function crossing(p: P[], q: P[], near?: P): P | null {
+  let best: P | null = null
+  for (let i = 1; i < p.length; i++) for (let j = 1; j < q.length; j++) {
+    const x = segCross(p[i - 1], p[i], q[j - 1], q[j])
+    if (x && (!best || !near || Math.hypot(x.x - near.x, x.y - near.y) < Math.hypot(best.x - near.x, best.y - near.y))) best = x
+  }
+  return best
+}
+const LINE_WORD = /수요|공급|곡선|직선|그래프|포물선|선을|선이|선은/
+
+/**
+ * 교점 표시(균형점 E 등)는 선이 옮겨지면 새 교점으로 따라간다. 선을 말하지 않고 가격·균형점이 오른다고만 하면 선을 밀지 않는다.
+ * 실측 090717: 수요선을 오른쪽으로 민 뒤 "위로 올라가서 가격이 올라요"에 수요선을 위로 또 밀고, 균형점은 따로 놀았다.
+ */
+export function followIntersections(ops: Op[], text: string, board: Board, engine: Engine): Op[] {
+  const axes = board.axes()
+  const lines = board.objs.filter((o) => o.kind === 'line' && !axes.has(o.id) && !board.underlineOf(o.id) && engine.linePts(o.id))
+  const small = board.objs.filter((o) => o.kind !== 'line' && o.kind !== 'box' && Math.hypot(o.bbox.w, o.bbox.h) < 45)
+  const markersOn = (d: string) => {
+    const found: { id: string; s: string; at: P }[] = []
+    for (const s of lines) {
+      if (s.id === d) continue
+      const x = crossing(engine.linePts(d)!, engine.linePts(s.id)!)
+      if (!x) continue
+      for (const m of small) {
+        const c = engine.settled(m.id)
+        if (c && Math.hypot(c.x - x.x, c.y - x.y) < 30) found.push({ id: m.id, s: s.id, at: x })
+      }
+    }
+    return found
+  }
+  let out = ops
+  // 선을 말하지 않은 "가격/균형점이 올라요"에는 교점 표시가 있는 선을 밀지 않는다
+  if (/가격|균형|교점|만나는\s*점/.test(text) && !LINE_WORD.test(text)) {
+    out = out.filter((op) => !(op.v === 'move' && op.by && lines.some((l) => l.id === op.id) && markersOn(op.id).length))
+  }
+  const moved = new Set(out.filter((op) => op.v === 'move').map((op) => (op as { id: string }).id))
+  const follow: Op[] = []
+  const followed = new Set<string>()
+  for (const op of out) {
+    if (op.v !== 'move' || !op.by || !lines.some((l) => l.id === op.id)) continue
+    const by = op.by
+    const shifted = engine.linePts(op.id)!.map((p) => ({ x: p.x + by[0], y: p.y + by[1] }))
+    for (const m of markersOn(op.id)) {
+      if (moved.has(m.s) || followed.has(m.id)) continue
+      const x = crossing(shifted, engine.linePts(m.s)!, m.at)
+      if (!x) continue
+      followed.add(m.id)
+      follow.push({ v: 'move', id: m.id, by: [Math.round(x.x - m.at.x), Math.round(x.y - m.at.y)], dur: op.dur })
+    }
+  }
+  if (!follow.length) return out
+  // AI가 표시를 따로 민 것은 계산한 교점 이동으로 바꾼다
+  return [...out.filter((op) => !(op.v === 'move' && followed.has(op.id))), ...follow]
+}
+
+/** AI 응답을 실행 전에 바로잡는 규칙들 (확정 발화에만) */
+export function repairOps(ops: Op[], text: string, board: Board, engine: Engine, now: number): Op[] {
+  let out = alignDirection(ops, text)
+  out = measureTranslation(out, text, board, now)
+  out = repairOrbit(out, text, board)
+  out = repairPendulum(out, board)
+  return followIntersections(out, text, board, engine)
 }
 
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
