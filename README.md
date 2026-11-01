@@ -39,18 +39,18 @@ flowchart LR
 | 계기와 예약 | 입력을 계기(획, 말, 가리키기…)로 바꾸고 짧게 묶은 뒤 AI를 부른다. 새 입력이 오면 낡은 요청을 취소한다 | `src/animation/pipeline.ts` |
 | 즉시 반응 | 화살표·가리키기·"흘러/막혀" 같은 확실한 신호는 AI 없이 바로 움직인다 | `src/animation/quick.ts` |
 | AI 대본 | 칠판 상태·발화·필기 이미지를 보내고 한 줄에 하나씩 JSON 단계를 받는다 | `src/animation/ai/` |
-| 검증 게이트 | 발화에서 대상·이동 의도·부정을 뽑아 근거 없는 동작을 막는다. 두 수 교환과 정렬은 코드가 직접 계획한다 | `src/animation/grounding.ts` |
-| 재생 | 동작 9종(`flow` `stop` `spawn` `move` `color` `scale` `pulse` `fade` `label`)을 실행하고, 움직이는 동안 원본 획은 숨긴다 | `src/animation/engine.ts`, `src/animation/ops.ts` |
+| 검증 게이트 | 발화에서 대상·이동 의도·부정을 뽑아 근거 없는 동작을 막고, 실측에서 자주 틀린 응답을 바로잡는다(진자 고정점·기울기, 공전, 축 대신 곡선, 그린 화살표 따라가기). 두 수 교환·정렬·패킷 개수·확산·되돌리기는 코드가 직접 계획한다 | `src/animation/grounding.ts` |
+| 재생 | 동작 13종(`flow` `send` `stop` `diffuse` `spawn` `move` `rotate` `restore` `color` `scale` `pulse` `fade` `label`)을 실행하고, 움직이는 동안 원본 획은 숨긴다 | `src/animation/engine.ts`, `src/animation/ops.ts` |
 
 ## 기술 스택
 
 | 영역 | 사용 |
 | --- | --- |
 | 화면 | React 19, TypeScript 7, Vite 8, pdf.js(`pdfjs-dist`), lucide-react |
-| 저장 | 브라우저 IndexedDB (필기만 저장) |
+| 저장 | 브라우저 IndexedDB (PDF·필기) |
 | 애니메이션 | Canvas 2D 오버레이, `requestAnimationFrame` |
 | AI | Anthropic SDK, Claude Haiku 5.5 기본 (Sonnet 5.5 선택 가능), 스트리밍, 시스템 프롬프트 캐시 |
-| 받아쓰기 | 브라우저 Web Speech API, OpenAI Realtime(`gpt-live-transcribe`), Gemini Live(`gemini-3.8-live`). 외부 엔진은 AudioWorklet PCM16 → 서버 WebSocket 프록시 |
+| 받아쓰기 | 기본 OpenAI Realtime(`gpt-live-transcribe`). 브라우저 Web Speech API, Gemini Live(`gemini-3.8-live`)로 바꿀 수 있다. 외부 엔진은 AudioWorklet PCM16 → 서버 WebSocket 프록시 |
 | 서버 | 개발: Vite 미들웨어(HTTPS, 접속 코드, API 프록시, 기록 저장). 운영: 의존성 없는 Node 서버 `server/prod.ts` |
 | 테스트 | Vitest 5 (단위·실측 회귀), 실측 사례 리플레이 평가 |
 | 배포 | Docker(`node:24-alpine`), GHCR, 라즈베리파이 deployd (`linux/arm64`) |
@@ -59,7 +59,7 @@ flowchart LR
 
 ```bash
 npm install
-cp .env.example .env   # ANTHROPIC_API_KEY 채우기
+cp .env.example .env   # ANTHROPIC_API_KEY, OPENAI_API_KEY 채우기
 npm run dev            # https://localhost:5173
 ```
 
@@ -72,7 +72,7 @@ npm run dev            # https://localhost:5173
 기본 코드는 새 서버 프로세스에서 만들어진다.
 이 Mac에서 HTTPS 없이 보려면 `DEV_HTTP=1 npm run dev`.
 
-`OPENAI_API_KEY`, `GEMINI_API_KEY`는 선택이다. 테스트 패널에서 받아쓰기 엔진을 바꿀 때만 쓴다.
+받아쓰기 기본값이 OpenAI라 `OPENAI_API_KEY`가 있어야 마이크가 글자를 받는다. 없으면 테스트 패널에서 받아쓰기를 '브라우저 내장'으로 바꾼다. `GEMINI_API_KEY`는 선택이다.
 
 ## 명령
 
@@ -100,7 +100,8 @@ EVAL_MODE=timed EVAL_RUNS=1 EVAL_CASE=real-sort-013822 npm run eval  # 원래 �
 
 ## 화면
 
-- 문서 목록에서 PDF를 올리고 차시를 연다.
+- 문서 목록에서 PDF를 올리고 차시를 연다. 처음 열면 데모 자료 두 개(`public/demo/`: 버블 정렬·평행이동·TCP·진자 4쪽 강의, 버블 정렬 정리)가 미리 들어간다. 브라우저마다 한 번만 넣고, 지운 자료는 다시 넣지 않는다 (`src/lib/demo.ts`).
+- 차시를 열면 마이크가 바로 켜진다. 끄는 것은 테스트 패널의 마이크 버튼.
 - 필기 화면 왼쪽은 PDF 편집기, 그 페이지 위에 애니메이션이 겹쳐 그려진다.
 - 오른쪽은 애니메이션 테스트 패널(대본, 말하기, 실험 설정, 측정). 상단의 플라스크 버튼으로 켜고 끈다.
 
@@ -113,12 +114,14 @@ EVAL_MODE=timed EVAL_RUNS=1 EVAL_CASE=real-sort-013822 npm run eval  # 원래 �
 | `src/components/PageCanvas.tsx` | 한 페이지의 PDF·필기·레이저 그리기와 펜 입력 |
 | `src/components/Overview.tsx` | 모아보기 |
 | `src/lib/db.ts` | 브라우저 저장 (IndexedDB) |
+| `src/lib/demo.ts` | 데모 자료 미리 넣기 |
+| `public/demo/` | 데모용 PDF |
 | `src/lib/inkBridge.ts` | 편집기 필기 → 애니메이션 계약 좌표 변환 |
 | `src/shared/ink.ts` | **필기 데이터 계약** (PDF 편집기 ↔ 애니메이션 레이어) |
 | `src/shared/bus.ts` | 두 쪽을 잇는 이벤트 통로 `InkBus` |
 | `src/animation/` | 애니메이션 레이어: 필기 해석, 즉시 반응, AI 호출, 재생 |
 | `src/evals/` | 실측 사례 리플레이와 채점 (`npm run eval`) |
-| `src/dev/` | 테스트 패널, 대본(가상 교안), 테스트 기록 |
+| `src/dev/` | 테스트 패널, 대본(데모 주제 4개: TCP·버블 정렬·진자·그래프 평행이동), 테스트 기록 |
 | `src/testboard/` | 예전 테스트용 필기 캔버스 (지금은 화면에 쓰지 않음) |
 | `server/` | 접속 코드, 기록 저장소, 운영 서버(`prod.ts`) |
 | `scripts/` | 실측 기록 → 사례 도구 |
@@ -173,7 +176,7 @@ EVAL_MODE=timed EVAL_RUNS=1 EVAL_CASE=real-sort-013822 npm run eval  # 원래 �
 
 - 운영 서버는 `server/prod.ts` (`npm start`). 의존성 없이 `dist/`를 내주고 `/healthz`, `/api/status`, `/api/anthropic/*`, `/api/stt/<업체>`를 처리한다.
 - 공개 주소라서 `/api/*`는 `?k=<접속 코드>`로 한 번 연 기기만 쓸 수 있다.
-- 값은 deployd 대시보드 Secrets에만 넣는다. 필수: `ILSABULLAN_ACCESS_CODE`(공백 없는 6~128자). 선택: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+- 값은 deployd 대시보드 Secrets에만 넣는다. 필수: `ILSABULLAN_ACCESS_CODE`(공백 없는 6~128자). AI와 기본 받아쓰기에 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`가 필요하다(deployd에는 선택 항목으로 등록돼 있어 빠져도 배포는 된다). `GEMINI_API_KEY`는 선택.
 - 테스트 기록(`/api/log`)과 원본 녹음은 개발 서버에서만 저장된다.
 
 ## 실측 기록
