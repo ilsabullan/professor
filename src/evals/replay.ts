@@ -1,13 +1,41 @@
 import type { InkEvent } from '../shared/ink'
 import type { InkBus } from '../shared/bus'
 import type { Pipeline } from '../animation/pipeline'
+import type { Board, SceneResult } from '../animation/board'
+import { parseScene } from '../animation/scene'
 
 export interface RecordedInput {
   n: number
   at: number
-  type: 'ink' | 'interim' | 'final'
+  type: 'ink' | 'interim' | 'final' | 'scene'
   event?: InkEvent
   text?: string
+  /** 장면 해석 응답 원문과, 요청 당시 객체 번호별 획 */
+  raw?: string
+  ids?: Record<string, string[]>
+}
+
+/** 실측 당시 객체 번호 → 같은 획을 가진 지금 칠판의 객체 번호. Board 휴리스틱이 바뀌어 번호가 밀려도 맞춘다 */
+export const idMap = (b: Board, ids: Record<string, string[]> = {}) => (id: string) => {
+  const sid = ids[id]?.[0]
+  return (sid && b.objs.find((o) => o.strokes.some((s) => s.id === sid))?.id) || id
+}
+
+export const remapScene = (r: SceneResult, f: (id: string) => string): SceneResult => ({
+  objs: Object.fromEntries(Object.entries(r.objs).map(([id, s]) => [f(id), { ...s, from: s.from && f(s.from), to: s.to && f(s.to) }])),
+  merge: r.merge.map((g) => [...new Set(g.map(f))]).filter((g) => g.length >= 2),
+  split: Object.fromEntries(Object.entries(r.split).map(([id, g]) => [f(id), g])),
+})
+
+/**
+ * 실측에서 반영된 장면 해석(화살표의 출발·도착, 이름표)을 그대로 다시 반영한다.
+ * 채점에서는 장면 해석 모델을 부르지 않으므로, 이것이 없으면 실측과 다른 칠판을 보고 답한다.
+ */
+export function applyRecordedScene(p: Pipeline, input: RecordedInput) {
+  const parsed = input.raw ? parseScene(input.raw) : null
+  if (!parsed) return
+  const { removed } = p.board.applyScene(remapScene(parsed, idMap(p.board, input.ids)), (id) => p.engine.isTakenOver(id))
+  if (removed.length) p.engine.forget(removed)
 }
 
 /** 점 사이 시간은 보존하고 마지막 점을 현재 이벤트 시간에 맞춘다. */
@@ -39,6 +67,8 @@ export async function replayInputs(
     } else if (input.type === 'interim') {
       p.onInterim(input.text ?? '', now)
       lastInterim = now
+    } else if (input.type === 'scene') {
+      applyRecordedScene(p, input)
     } else if (input.type === 'final') {
       p.onFinal(input.text ?? '', lastInterim ?? now)
       lastInterim = undefined

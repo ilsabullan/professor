@@ -78,6 +78,42 @@ interface Flow {
   phase: number
 }
 
+/** 한 번 보내는 패킷 묶음 (send) */
+interface Burst {
+  along: string
+  n: number
+  drop: number
+  /** 버려지는 자리 (경로 위 비율 0~1) */
+  dropAt: number
+  color: string
+  rev: boolean
+  ack: boolean
+  t0: number
+  /** 패킷 하나가 경로를 지나는 시간 */
+  travel: number
+  /** 패킷 사이 간격 */
+  gap: number
+}
+
+const DROP_FALL = 900
+
+/** 경로 위에서 점 p와 가장 가까운 곳의 비율 (0=시작, 1=끝) */
+function fractionOn(line: Pt[], p: Pt) {
+  const total = pathLen(line) || 1
+  let best = Infinity
+  let at = 0
+  let acc = 0
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1], b = line[i]
+    const L = dist(a, b)
+    const k = L ? clamp(((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (L * L), 0, 1) : 0
+    const d = dist(p, { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k })
+    if (d < best) { best = d; at = (acc + L * k) / total }
+    acc += L
+  }
+  return at
+}
+
 interface Tween {
   set: (v: number) => void
   from: number
@@ -112,6 +148,9 @@ export class Engine {
   flows: Flow[] = []
   /** 흰 종이 위에 그릴 때 true (PDF 편집기). 어두운 칠판이면 false */
   paper = false
+  bursts: Burst[] = []
+  /** 보낸 패킷 수 기록 (AI가 두 배·절반을 이어서 계산하게) */
+  sent: { along: string; n: number; drop: number; ack: boolean; rev: boolean }[] = []
   private tweens: Tween[] = []
   private takenOver = new Set<string>()
   /** 지금 단계가 시작될 때의 위치 (한 단계 안의 move는 모두 이 기준으로 동시에 움직인다) */
@@ -135,6 +174,8 @@ export class Engine {
     this.anim = {}
     this.spawned = {}
     this.flows = []
+    this.bursts = []
+    this.sent = []
     this.tweens = []
     this.frozen.clear()
   }
@@ -212,6 +253,7 @@ export class Engine {
       delete this.anim[id]
       this.takenOver.delete(id)
       this.flows = this.flows.filter((f) => f.along !== id)
+      this.bursts = this.bursts.filter((f) => f.along !== id)
     }
   }
 
@@ -302,7 +344,7 @@ export class Engine {
     const moved = new Set<string>()
     for (const op of ops) {
       if ('id' in op && op.id && !positions.has(op.id)) return `없는 객체: ${op.id}`
-      if (op.v === 'flow' && !this.isPath(op.along) && !newPaths.has(op.along)) return '연결 경로가 아닌 선'
+      if ((op.v === 'flow' || op.v === 'send') && !this.isPath(op.along) && !newPaths.has(op.along)) return '연결 경로가 아닌 선'
       if (op.v === 'rotate' && typeof op.about === 'string' && !positions.has(op.about)) return `없는 객체: ${op.about}`
       if (op.v !== 'move') continue
       if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
@@ -378,8 +420,10 @@ export class Engine {
   }
 
   /** 손글씨·글자끼리 크게 겹친 쌍 (AI에게 알려 스스로 바로잡게) */
+  /** 움직인 값이 다른 값과 겹친 쌍. 교수자가 처음부터 겹쳐 그린 것은 바로잡을 대상이 아니다 */
   overlaps(): [string, string][] {
     const items = this.board.values()
+    const moved = (id: string) => { const off = this.offset(id); return Math.abs(off.x) > 1 || Math.abs(off.y) > 1 }
     const boxes = items.map((o) => {
       const off = this.offset(o.id)
       return { id: o.id, x: o.bbox.x + off.x, y: o.bbox.y + off.y, w: o.bbox.w, h: o.bbox.h }
@@ -389,6 +433,7 @@ export class Engine {
       for (let j = i + 1; j < boxes.length; j++) {
         const a = boxes[i]
         const b = boxes[j]
+        if (!moved(a.id) && !moved(b.id)) continue
         const iw = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
         const ih = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
         if (iw > 0 && ih > 0 && iw * ih > 0.4 * Math.min(a.w * a.h, b.w * b.h)) out.push([a.id, b.id])
@@ -440,7 +485,25 @@ export class Engine {
         this.flows.push({ along: op.along, n: op.n, speed: op.speed, color: op.color, rev: op.rev, phase: 0 })
         return 600
       }
+      case 'send': {
+        const line = this.linePts(op.along)
+        if (!line) return 0
+        // 개수가 보이게 같은 경로의 계속 흐르는 입자는 멈춘다
+        this.flows = this.flows.filter((f) => f.along !== op.along)
+        const L = pathLen(line)
+        const travel = clamp(L / 0.32, 900, 2200)
+        const gap = clamp(travel / Math.max(3, op.n + 1), 140, 320)
+        const c = op.at ? this.center(op.at) : null
+        let dropAt = c ? fractionOn(line, c) : 0.6
+        if (op.rev) dropAt = 1 - dropAt
+        dropAt = clamp(dropAt, 0.15, 0.95)
+        this.bursts.push({ along: op.along, n: op.n, drop: op.drop, dropAt, color: op.color, rev: op.rev, ack: !!op.ack, t0: now, travel, gap })
+        this.sent.push({ along: op.along, n: op.n, drop: op.drop, ack: !!op.ack, rev: op.rev })
+        if (this.sent.length > 8) this.sent.shift()
+        return travel + gap * (op.n - 1) + (op.drop ? DROP_FALL * 0.5 : 0)
+      }
       case 'stop':
+        if (op.along) this.bursts = this.bursts.filter((f) => f.along !== op.along)
         if (op.along) this.flows = this.flows.filter((f) => f.along !== op.along)
         // 반복 회전을 멈춤: 지금 각도에서 멈춘다
         if (op.id && this.anim[op.id]?.spin) this.anim[op.id].spin = undefined
@@ -580,7 +643,7 @@ export class Engine {
           if (a.rot) this.tween((v) => (a.rot = v), a.rot, Math.round(a.rot / (2 * Math.PI)) * 2 * Math.PI, op.dur, now, `${id}:rot`)
           if (a.sc !== 1) this.tween((v) => (a.sc = v), a.sc, 1, op.dur, now)
         }
-        if (!op.id) this.flows = []
+        if (!op.id) { this.flows = []; this.bursts = [] }
         else this.flows = this.flows.filter((f) => f.along !== op.id)
         return op.dur
       }
@@ -663,6 +726,30 @@ export class Engine {
       const L = p ? pathLen(p) : 300
       f.phase += (dt * f.speed * 120) / Math.max(80, L)
     }
+    this.bursts = this.bursts.filter((b) => now - b.t0 < b.travel + b.gap * (b.n - 1) + DROP_FALL + 100)
+    this.clock = now
+  }
+
+  private clock = 0
+
+  /** 묶음 안 패킷 k의 지금 모습. 아직 출발 전이거나 사라졌으면 null */
+  private packet(b: Burst, k: number, line: Pt[], now: number) {
+    const start = b.t0 + k * b.gap
+    if (now < start) return null
+    // 앞에서부터 보내고, 버퍼에 늦게 닿는 뒤쪽 패킷이 넘쳐 버려진다
+    const dropped = k >= b.n - b.drop
+    const end = dropped ? b.dropAt : 1
+    const f = (now - start) / b.travel
+    if (f <= end) {
+      const q = pointOnPath(line, b.rev ? 1 - f : f)
+      return { ...q, color: b.color, alpha: 1 }
+    }
+    if (!dropped) return null
+    // 버려짐: 그 자리에서 빨갛게 변해 아래로 떨어지며 사라진다
+    const fall = (now - start - end * b.travel) / DROP_FALL
+    if (fall >= 1) return null
+    const q = pointOnPath(line, b.rev ? 1 - end : end)
+    return { x: q.x + fall * 10, y: q.y + fall * fall * 70, color: '#ff5a46', alpha: 1 - fall * fall }
   }
 
   private col(color: string) {
@@ -697,6 +784,26 @@ export class Engine {
         c.beginPath()
         c.arc(q.x, q.y, 5, 0, Math.PI * 2)
         c.fill()
+      }
+    }
+    for (const b of this.bursts) {
+      const line = this.linePts(b.along)
+      if (!line) continue
+      for (let k = 0; k < b.n; k++) {
+        const q = this.packet(b, k, line, this.clock)
+        if (!q) continue
+        c.save()
+        c.globalAlpha = clamp(q.alpha, 0, 1)
+        c.fillStyle = this.col(q.color)
+        c.strokeStyle = '#0d1512'
+        c.lineWidth = 1.5
+        c.beginPath()
+        // 데이터 패킷은 작은 사각형, 응답은 작은 점
+        if (b.ack) c.arc(q.x, q.y, 4.5, 0, Math.PI * 2)
+        else c.rect(q.x - 8, q.y - 6, 16, 12)
+        c.fill()
+        c.stroke()
+        c.restore()
       }
     }
     for (const [id, s] of Object.entries(this.spawned)) {
@@ -802,6 +909,10 @@ export class Engine {
     const out: string[] = []
     if (this.flows.length)
       out.push('흐르는 중: ' + this.flows.map((f) => `${f.along}(입자 ${f.n}, 빠르기 ${f.speed}${f.rev ? ', 반대 방향' : ''})`).join(', '))
+    if (this.sent.length) {
+      const last = this.sent.filter((x) => !x.ack).at(-1)
+      out.push(`보낸 패킷(오래된→최근): ${this.sent.map((x) => `${x.along} ${x.ack ? '응답 ' : ''}${x.n}개${x.drop ? `(${x.drop}개 버려짐)` : ''}`).join(' → ')}${last ? `. 직전에 보낸 데이터 패킷 수: ${last.n}` : ''}`)
+    }
     const moved = Object.entries(this.anim)
       .filter(([id, a]) => !this.spawned[id] && (Math.abs(a.dx) > 1 || Math.abs(a.dy) > 1 || a.sc !== 1 || a.color || a.alpha < 1))
       .map(([id, a]) => {

@@ -103,7 +103,7 @@ export function groundSpeech(board: Board, text: string, focus: string[], id: st
   return {
     id, phase, text, targets, move, sort, negated,
     restore: !negated && RESTORE.test(text),
-    flow: /(흘러|흐르|흐름|보내|전송|이동|지나가|들어가|들어와|퍼져|퍼지|전달|돌아와|순환|돌[아고면며]|돈다|도는|공전|회전|굴러)/.test(text),
+    flow: /(흘러|흐르|흐름|보내|보낼|보냈|보냄|전송|이동|지나가|들어가|들어와|퍼져|퍼지|전달|돌아와|순환|돌[아고면며]|돈다|도는|공전|회전|굴러)/.test(text),
     stop: /(멈춰|멈추|멈춘|정지|끊기|끊겨|끊어)/.test(text),
   }
 }
@@ -378,6 +378,32 @@ export function repairOps(ops: Op[], text: string, board: Board, engine: Engine,
   return followIntersections(out, text, board, engine)
 }
 
+/** 데이터 패킷을 보내고, 늘리고, 버리는 말 (TCP 혼잡 제어 실측: "하나만 보낼 거야", "2개 4개 두 배씩", "넘친 패킷은 버려져요") */
+const SEND = /보내|보낼|보냈|보냄|전송|흘러|흐르|패킷|패키지|버려|버리|버린|손실|넘치|넘쳐|넘친|배씩|두\s*배|절반|반으로|줄[이여]|늘[어려리고]|하나씩|\d+\s*개|[한두세네]\s*개|하나만/
+/** 응답(ACK)이 돌아오는 말 */
+const ACK = /응답|ack|애크|에크|확인\s*신호|돌아[오와]/i
+/** 개수를 계산해서 정하는 말. 이때는 말한 수가 아니어도 된다 */
+const RECKON = /배씩|두\s*배|절반|반으로|하나씩|줄[이여]|늘[어려리고]/
+
+/** 말한 패킷 개수들 ("하나만", "2개 4개"). "하나씩"은 늘리는 폭이라 뺀다 */
+export function spokenCounts(text: string): number[] {
+  const out: number[] = []
+  for (const m of text.matchAll(/(\d+)\s*개/g)) out.push(Number(m[1]))
+  const words: [RegExp, number][] = [[/하나(?!씩)|한\s*개/, 1], [/두\s*개/, 2], [/세\s*개/, 3], [/네\s*개/, 4]]
+  for (const [re, n] of words) if (re.test(text)) out.push(n)
+  return [...new Set(out)]
+}
+
+function sendUngrounded(op: Extract<Op, { v: 'send' }>, g: Grounding, strict: boolean): string | null {
+  if (!strict) return null
+  if (op.ack) return ACK.test(g.text) ? null : '응답을 말하지 않음'
+  // "응답이 돌아오면"만 말했는데 다음 전송을 앞질러 보내지 않는다 (실측 재현: 2개를 미리 보내 "2개 4개"에서 4만 남음)
+  if (!SEND.test(g.text)) return '패킷을 보낼 근거가 없음'
+  const counts = spokenCounts(g.text)
+  if (counts.length && !RECKON.test(g.text) && !counts.includes(op.n)) return '말한 패킷 개수와 다름'
+  return null
+}
+
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
   const strict = mode === 'strict'
@@ -410,6 +436,12 @@ export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: Ga
   }
   // AI가 만든 화살표(p…)가 경로인지는 엔진이 확인한다
   if (ops.some((op) => op.v === 'flow' && ((strict && !g.flow) || (!op.along.startsWith('p') && !board.isFlowPath(op.along))))) return '흐름의 근거 또는 연결 경로가 없음'
+  for (const op of ops) {
+    if (op.v !== 'send') continue
+    if (!op.along.startsWith('p') && !board.isFlowPath(op.along)) return '패킷을 보낼 연결 경로가 없음'
+    const why = sendUngrounded(op, g, strict)
+    if (why) return why
+  }
   if (!minimal && g.phase === 'ink' && ops.some((op) => op.v === 'flow' && !g.targets.includes(op.along))) return '지금 그린 경로와 다름'
   if (strict && ops.some((op) => op.v === 'stop') && !g.stop) return '흐름을 멈추라는 입력이 없음'
   if (!minimal && g.phase === 'ink' && ops.some((op) => !['pulse', 'color', 'flow'].includes(op.v))) return '필기만으로 다음 과정을 실행할 수 없음'
@@ -425,6 +457,52 @@ export function planRestore(engine: Engine, g: Grounding): { ops: Op[]; cap: str
   return engine.changed().length ? { ops: [{ v: 'restore', dur: 700 }], cap: '처음 자리로 되돌림' } : null
 }
 
+/** 말한 순서대로의 패킷 개수 ("2개 4개" → [2, 4]) */
+function orderedCounts(text: string): number[] {
+  const hits: [number, number][] = []
+  for (const m of text.matchAll(/(\d+)\s*개/g)) hits.push([m.index!, Number(m[1])])
+  for (const [re, n] of [[/하나(?!씩)|한\s*개/g, 1], [/두\s*개/g, 2], [/세\s*개/g, 3], [/네\s*개/g, 4]] as [RegExp, number][])
+    for (const m of text.matchAll(re)) hits.push([m.index!, n])
+  return hits.sort((a, b) => a[0] - b[0]).map(([, n]) => n)
+}
+
+/**
+ * 이미 패킷을 보낸 뒤 "두 배씩 / 절반으로 / 하나씩 늘려요"라고 하면 보낼 개수를 계산해서 단계마다 보낸다.
+ * (실측 062040·041959: 모델이 "2개 4개" 중 하나만 보내거나 5개의 절반을 2개로 보내고 '하나씩 늘림'은 빠뜨렸다)
+ * 버림·응답은 어디서 넘치는지 등 판단이 필요해 모델에 맡긴다.
+ */
+export function planWindow(engine: Engine, g: Grounding): { ops: Op[]; cap: string; more: { ops: Op[]; cap: string }[] } | null {
+  if (g.phase !== 'final' || !RECKON.test(g.text) || /버려|버리|버린|손실\s*(?:이|가)?\s*(?:나|생|발생)|넘치|넘쳐|넘친/.test(g.text)) return null
+  const last = engine.sent.filter((x) => !x.ack).at(-1)
+  if (!last || !engine.linePts(last.along)) return null
+  const halve = /절반|반으로/.test(g.text)
+  const inc = /하나씩|한\s*개씩|1\s*개?씩/.test(g.text)
+  const dbl = /두\s*배|배씩|배로/.test(g.text)
+  let seq: number[] = []
+  let why = ''
+  if (halve) {
+    const h = Math.max(1, Math.ceil(last.n / 2))
+    seq = inc ? [h, h + 1, h + 2] : [h]
+    why = '절반으로'
+  } else if (dbl) {
+    const said = orderedCounts(g.text)
+    // 이미 보낸 수까지는 건너뛴다 ("1개, 2개, 4개"에서 1은 보냈음)
+    while (said.length && said[0] <= last.n) said.shift()
+    seq = said.length ? said : [last.n * 2, last.n * 4]
+    why = '두 배로'
+  } else if (inc) {
+    seq = [last.n + 1, last.n + 2]
+    why = '하나씩 늘려'
+  }
+  seq = seq.filter((n) => n >= 1 && n <= 16).slice(0, 4)
+  if (!seq.length) return null
+  const steps = seq.map((n) => ({
+    ops: [{ v: 'send' as const, along: last.along, n, color: '#cdf0ff', rev: last.rev, drop: 0 }],
+    cap: `${why} ${n}개 보냄`,
+  }))
+  return { ...steps[0], more: steps.slice(1) }
+}
+
 /** 상태를 바꾸는 동작. 교환의 한쪽만 실행되지 않게 묶음 단위로만 통과시킨다 */
 const STATE_CHANGE = new Set<Op['v']>(['move', 'rotate', 'restore'])
 const DECORATION = new Set<Op['v']>(['pulse', 'color', 'label'])
@@ -438,8 +516,10 @@ export function keepGrounded(ops: Op[], g: Grounding, board: Board, mode: GateMo
   if (!reason) return { ops, dropped: [], reason: null }
   const kept = ops.filter((op) => !rejectUngrounded([op], g, board, mode))
   const dropped = ops.filter((op) => !kept.includes(op))
+  // 점·이름표를 새로 띄우는 것만 남아도 강조뿐이다 (실측 재현: 흐름이 막히고 점 하나만 떠서 다음 "흘러가요"가 이미 보여준 것으로 처리됨)
+  const minor = (op: Op) => DECORATION.has(op.v) || (op.v === 'spawn' && op.shape !== 'arrow')
   const lost = dropped.some((op) => STATE_CHANGE.has(op.v))
-    || (kept.every((op) => DECORATION.has(op.v)) && dropped.some((op) => !DECORATION.has(op.v)))
+    || (kept.every(minor) && dropped.some((op) => !minor(op)))
   if (!kept.length || lost || rejectUngrounded(kept, g, board, mode)) return { ops: [], dropped: ops, reason }
   return { ops: kept, dropped, reason }
 }
