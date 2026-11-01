@@ -9,6 +9,11 @@ export type Op =
    */
   | { v: 'send'; along: string; n: number; color: string; rev: boolean; drop: number; at?: string; ack?: boolean }
   | { v: 'stop'; along?: string; id?: string }
+  /**
+   * 확산: 용기(상자) 안에서 입자 n개가 한 점(at, 없으면 용기 가운데)에서 퍼져 나간다.
+   * spread 0~1: 0.1 막 떨어뜨린 방울, 0.5 사방으로 퍼지는 중, 1 용기 전체에 고르게. 같은 용기에 다시 쓰면 지금 퍼진 정도에서 이어서 퍼진다
+   */
+  | { v: 'diffuse'; in: string; spread: number; n: number; color: string; at?: [number, number]; dur: number }
   | {
       v: 'spawn'
       id: string
@@ -98,6 +103,20 @@ export function sanitizeOp(raw: unknown): Op | null {
         drop: Math.round(clamp(num(o.drop, 0), 0, n)),
         ...(at ? { at } : {}),
         ...(ack ? { ack } : {}),
+      }
+    }
+    case 'diffuse': {
+      const box = str(o.in)
+      if (!box) return null
+      const at = xy(o.at) ?? undefined
+      return {
+        v: 'diffuse',
+        in: box,
+        spread: clamp(num(o.spread, 0.5), 0.03, 1),
+        n: Math.round(clamp(num(o.n, 30), 6, 60)),
+        color: color(o.color, COLORS.blue),
+        ...(at ? { at } : {}),
+        dur: clamp(num(o.dur, 2500), 300, 8000),
       }
     }
     case 'stop': {

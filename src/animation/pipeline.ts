@@ -9,7 +9,7 @@ import { Engine, Player, type PlayStep } from './engine'
 import type { ReqRecord } from './metrics'
 import { type Op, sanitizeOp } from './ops'
 import { quickFromBoard, quickFromSpeech } from './quick'
-import { describeGrounding, repairOps, type GateMode, groundSpeech, keepGrounded, mentionedValues, planNumericSort, planNumericSwap, planRestore, planWindow, rejectUngrounded, type Grounding } from './grounding'
+import { describeGrounding, repairOps, type GateMode, groundSpeech, keepGrounded, mentionedValues, planDiffusion, planNumericSort, planNumericSwap, planRestore, planWindow, rejectUngrounded, type Grounding } from './grounding'
 import { SceneParser } from './scene'
 import { snapshotB64 } from './snapshot'
 import { type MicState, SpeechInput, type SttProvider } from './speech'
@@ -543,9 +543,10 @@ export class Pipeline {
       const g = trig.grounding
       const restore = g?.phase === 'final' ? planRestore(this.engine, g) : null
       const win = !restore && g ? planWindow(this.engine, g, this.board) : null
-      const plan = restore ?? win ?? (g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null)
+      const diffuse = !restore && !win && g ? planDiffusion(this.board, this.engine, g) : null
+      const plan = restore ?? win ?? diffuse ?? (g?.phase === 'final' ? g.sort ? planNumericSort(this.board, this.engine, g.text) : planNumericSwap(this.board, this.engine, g) : null)
       if (plan) {
-        rec.model = restore ? 'local-restore' : win ? 'local-window' : g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'
+        rec.model = restore ? 'local-restore' : win ? 'local-window' : diffuse ? 'local-diffusion' : g?.sort ? 'local-numeric-sort' : 'local-numeric-swap'
         rec.cfg += '/로컬이동'
         // onText는 지금까지 받은 전체 글을 받는다
         consumer.onText([{ conf: 1, ops: plan.ops, cap: plan.cap }, ...(win?.more ?? [])].map((x) => JSON.stringify(x) + '\n').join(''))

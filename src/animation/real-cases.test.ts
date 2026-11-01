@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { Board } from './board'
-import { Engine } from './engine'
+import { Engine, diffusionPoint } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, alongToShift, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, planWindow, rejectUngrounded, spokenCounts } from './grounding'
+import { alignDirection, alongToShift, followDrawnArrow, followIntersections, groundSpeech, keepAxesStill, planDiffusion, repairOps, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, planWindow, rejectUngrounded, spokenCounts } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -182,7 +182,7 @@ const boardAt = (c: RecordedCase, n: number) => {
   const b = new Board()
   for (const e of c.inputs.filter((x) => x.n < n)) {
     if (e.type === 'ink') b.apply(e.event!)
-    else if (e.type === 'scene') b.applyScene(remapScene(parseScene(e.raw!)!, idMap(b, e.ids)))
+    else if (e.type === 'scene') b.applyScene(remapScene(parseScene(e.raw!)!, idMap(b, Object.keys(e.ids ?? {}).length ? e.ids : e.after)))
   }
   return b
 }
@@ -655,5 +655,138 @@ describe('TCP 혼잡 제어 (04:19·06:20 실측: 시연이 한 번도 끝까지
     const drop = planWindow(e, groundSpeech(b, '넘친 새끼든 버려져요', [], 'none', 'final'), b)!.ops[0] as Extract<Op, { v: 'send' }>
     expect(drop).toMatchObject({ n: 16, drop: 4, at: 'o6' })
     expect(plan('응답이 돌아오면')).toBeNull()
+  })
+})
+
+describe('10:49 실측: 수요·공급 그래프에서 축을 옮김', () => {
+  // logs 104903: 글자 없이 머리만 단 L자 축(o29 가로, o30 세로)에 앞 수업 이름표('온도 증가')가 남아 있었다
+  const c = fixture('real-econ-104903')
+
+  it('머리만 단 L자 축도 곡선을 그 안에 그렸으면 좌표축이다', () => {
+    const b = boardAt(c, 1205)
+    const id = realIds(c, b, 1205)
+    expect([...b.axes()].sort()).toEqual([id('o29'), id('o30')].sort())
+  })
+
+  it('"수요가 오른쪽으로 옮겨 가요"에 x축 대신 오른쪽 아래로 향하는 수요 곡선을 민다', () => {
+    const b = boardAt(c, 1205)
+    const id = realIds(c, b, 1205)
+    // n=1205 응답 원문
+    const ops = remapOps(opsOf('{"conf":0.85,"ops":[{"v":"move","id":"o29","by":[60,0],"dur":900},{"v":"pulse","id":"o31"}],"cap":"수요가 오른쪽으로 이동"}'), id)
+    const out = keepAxesStill(ops, '수요와 공급이 만나는 점이 균형이에요 여기서 가격이 정해져요 그런데 사람들이 더 많이 원하면 수요가 이렇게 오른쪽으로 옮겨 가요', b)
+    expect(out[0]).toMatchObject({ v: 'move', id: id('o31'), by: [60, 0] })
+  })
+
+  it('곡선을 말하지 않고 "균형점이 위로 올라가서 가격이 올라요"면 축을 올리지 않는다', () => {
+    const b = boardAt(c, 1234)
+    const id = realIds(c, b, 1234)
+    const ops = remapOps(opsOf('{"conf":0.8,"ops":[{"v":"move","id":"o29","by":[0,-40],"dur":600}],"cap":"공급 곡선 위로 가격이 상승"}'), id)
+    expect(keepAxesStill(ops, '그러면 군 0.2 위로 올라가서 가격이 올라요', b)).toEqual([])
+  })
+})
+
+describe('09:28 실측: 그린 포물선 화살표를 따라가지 않음', () => {
+  // logs 092801: 절벽(o16) 위 공(o17)에서 출발한 포물선 화살표(o18). "이렇게 휘면서 떨어져요"
+  const c = fixture('real-projectile-092801')
+  // n=500 응답 원문: 공 자리에 점을 새로 찍고 화살표 끝까지 직선 이동, 같은 자리에 직선 화살표를 또 만듦
+  const raw = '{"conf":0.8,"ops":[{"v":"spawn","id":"p1","shape":"dot","at":[845,253],"color":"amber","r":10},{"v":"move","id":"p1","to":[1154,334],"dur":900},{"v":"spawn","id":"p2","shape":"arrow","from":[845,253],"to":[1154,334],"text":"수평 던짐","color":"amber"}],"cap":"공이 수평으로 던져져 포물선을 그리며 떨어짐"}'
+
+  it('공 대역 점 대신 그린 공을 포물선 화살표를 따라 옮기고, 베낀 직선 화살표는 만들지 않는다', () => {
+    const b = boardAt(c, 500)
+    const id = realIds(c, b, 500)
+    const e = new Engine(b, () => {})
+    const out = repairOps(remapOps(opsOf(raw), id), '이렇게 휘면서 떨어져요', b, e, 0)
+    expect(out).toEqual([{ v: 'move', id: id('o17'), along: id('o18'), dur: 1200 }])
+    expect(e.validateStep(out)).toBeNull()
+  })
+
+  it('"그래서 여기에 떨어져요"에 공을 화살표 끝으로 직선 이동하는 응답도 화살표를 따라가게 한다', () => {
+    const b = boardAt(c, 547)
+    const id = realIds(c, b, 547)
+    const out = followDrawnArrow(remapOps(opsOf('{"ops":[{"v":"move","id":"o17","to":[1154,334]},{"v":"pulse","id":"o19"}],"cap":"공이 여기에 떨어짐"}'), id), b, new Engine(b, () => {}))
+    expect(out[0]).toMatchObject({ v: 'move', id: id('o17'), along: id('o18') })
+  })
+
+  it('화살표와 상관없는 이동은 그대로 둔다', () => {
+    const b = boardAt(c, 500)
+    const ops: Op[] = [{ v: 'move', id: realIds(c, b, 500)('o17'), by: [0, 200], dur: 900 }]
+    expect(followDrawnArrow(ops, b, new Engine(b, () => {}))).toBe(ops)
+  })
+})
+
+describe('확산 실측: 잉크가 비커 안에서 퍼진다', () => {
+  /** 말을 차례로 들려주며 확산 계획을 실행하고, 매 말 뒤의 확산 상태를 돌려준다 */
+  const run = (b: Board, says: string[]) => {
+    const e = new Engine(b, () => {})
+    let now = 0
+    return says.map((text) => {
+      const plan = planDiffusion(b, e, groundSpeech(b, text, [], 'd', 'final', e))
+      if (plan) {
+        expect(e.validateStep(plan.ops)).toBeNull()
+        e.beginStep()
+        for (const op of plan.ops) e.applyOp(op, now)
+      }
+      now += 5000
+      e.tick(now, 5)
+      return { plan, e, now }
+    })
+  }
+
+  it('09:21: 잉크를 수면 끝이 아니라 비커 정가운데에 떨어뜨리고, 사방으로, 비커 물 전체로 퍼진다', () => {
+    // logs 092126: 비커 o13, 수면선 o14. 실측 응답은 잉크를 수면 오른쪽 끝(865,466)에 찍고 수면선을 따라 흐르게 했다
+    const c = fixture('real-diffusion-092126')
+    const b = boardAt(c, 532)
+    const id = realIds(c, b, 532)
+    const box = b.get(id('o13'))!.bbox
+    const [drop, out, even] = run(b, ['여기에 잉크를 한 방울 떨어트려요', '잉크 입자가 사방으로 퍼져 나가요', '잉크 있다가 시간이 지나면서 비커 전체 잉크 입자가 고르게 퍼져요'])
+    expect(drop.plan?.ops[0]).toMatchObject({ v: 'diffuse', in: id('o13'), spread: 0.1 })
+    const d = drop.e.diffusions[0]
+    expect(Math.abs(d.c.x - (box.x + box.w / 2))).toBeLessThan(5)
+    expect(d.c.y).toBeGreaterThan(470) // 수면(466) 아래 물속
+    expect(out.plan?.ops[0]).toMatchObject({ spread: 0.5 })
+    expect(even.plan?.ops[0]).toMatchObject({ spread: 1 })
+    // 다 퍼지면 입자가 수면 아래 물 전체에 흩어진다: 네 귀퉁이 칸에 모두 입자가 있다
+    const pts = d.targets.map((_, i) => diffusionPoint(d, i, even.now))
+    const r = d.region
+    expect(pts.every((p) => p.y >= r.y && p.y <= r.y + r.h && p.y > 466)).toBe(true)
+    const quads = new Set(pts.map((p) => `${p.x > r.x + r.w / 2 ? 'R' : 'L'}${p.y > r.y + r.h / 2 ? 'B' : 'T'}`))
+    expect(quads.size).toBe(4)
+  })
+
+  it('11:05: "비커 전체에 고르게 퍼지죠"에 그린 잉크 방울에서 비커 전체로 흩뿌리고 화살표 흐름은 멈춘다', () => {
+    // logs 110521: 비커 o2, 잉크 방울 o3, 바깥으로 그린 화살표 o4·o6·o7·o8 (즉시 반응이 o4·o7에 흐름을 켰다)
+    const c = fixture('real-diffusion-110521')
+    const b = boardAt(c, 72)
+    const id = realIds(c, b, 72)
+    const [drop] = run(b, ['여기에 잉크를 한 방울 떨어트려요'])
+    const d = drop.e.diffusions[0]
+    expect(d.in).toBe(id('o2'))
+    // 방울을 그리기 전에 한 말이라 비커 정가운데에서 시작한다
+    const box = b.get(id('o2'))!.bbox
+    expect(Math.hypot(d.c.x - (box.x + box.w / 2), d.c.y - (box.y + box.h / 2))).toBeLessThan(5)
+
+    const b2 = boardAt(c, 164)
+    const id2 = realIds(c, b2, 164)
+    const e = new Engine(b2, () => {})
+    e.applyOp({ v: 'flow', along: id2('o4'), n: 6, speed: 1.2, color: '#5ec8e6', rev: false }, 0)
+    e.applyOp({ v: 'flow', along: id2('o7'), n: 6, speed: 1.2, color: '#5ec8e6', rev: false }, 0)
+    for (const [text, spread] of [['여기에 잉크를 한 방울 떨어트려요', 0.1], ['잉크 입자가 사방으로 퍼져 나가요', 0.5], ['시간이 지나면 비커 전체의 고르게 퍼 지죠', 1]] as const) {
+      const plan = planDiffusion(b2, e, groundSpeech(b2, text, [], 'd', 'final', e))
+      expect(plan?.ops[0]).toMatchObject({ v: 'diffuse', in: id2('o2'), spread })
+      for (const op of plan!.ops) e.applyOp(op, 0)
+      e.tick(10000, 10)
+    }
+    expect(e.flows).toEqual([])
+    expect(e.spreadOf(id2('o2'))).toBeCloseTo(1)
+    // 같은 말을 또 하면 다시 계획하지 않는다
+    expect(planDiffusion(b2, e, groundSpeech(b2, '시간이 지나면 비커 전체에 고르게 퍼져요', [], 'd', 'final', e))).toBeNull()
+  })
+
+  it('확산과 상관없는 말·수업에는 계획하지 않는다', () => {
+    const c = fixture('real-diffusion-092126')
+    const b = boardAt(c, 532)
+    const e = new Engine(b, () => {})
+    for (const text of ['물이 담긴 비커예요', '패킷이 수신자로 흘러가요', '잉크가 아직 안 퍼졌어요'])
+      expect(planDiffusion(b, e, groundSpeech(b, text, [], 'd', 'final', e))).toBeNull()
   })
 })

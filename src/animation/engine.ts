@@ -1,5 +1,5 @@
 import type { Board, BoardObj } from './board'
-import { type Pt, boxCenter, clamp, dist, pathLen, pointOnPath } from './geometry'
+import { type Box, type Pt, boxCenter, clamp, dist, pathLen, pointOnPath } from './geometry'
 import type { Op } from './ops'
 
 interface PathAnim {
@@ -79,6 +79,52 @@ interface Flow {
 }
 
 /** 한 번 보내는 패킷 묶음 (send) */
+/** 용기 안에서 퍼지는 입자 (확산) */
+export interface Diffusion {
+  in: string
+  /** 입자가 머무는 영역 (수면선이 있으면 그 아래) */
+  region: Box
+  /** 퍼져 나가는 시작점 */
+  c: Pt
+  /** 다 퍼졌을 때(spread 1) 각 입자의 자리. 영역 안에 고르게 */
+  targets: Pt[]
+  color: string
+  from: number
+  to: number
+  t0: number
+  dur: number
+}
+
+/** 같은 입력에 늘 같은 자리가 나오는 난수 (테스트·재생이 매번 같게) */
+function seeded(seed: number) {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** 지금 퍼진 정도 (0~1) */
+export function diffusionSpread(d: Diffusion, now: number) {
+  const k = clamp((now - d.t0) / d.dur, 0, 1)
+  return d.from + (d.to - d.from) * (1 - (1 - k) * (1 - k))
+}
+
+/** i번째 입자의 지금 자리: 시작점에서 제자리까지 퍼진 만큼 + 조금씩 떠다님. 영역 밖으로 나가지 않는다 */
+export function diffusionPoint(d: Diffusion, i: number, now: number): Pt {
+  const s = diffusionSpread(d, now)
+  const t = d.targets[i]
+  const amp = 2 + 5 * s
+  const ph = i * 2.399
+  const x = d.c.x + s * (t.x - d.c.x) + amp * Math.sin(now / 650 + ph)
+  const y = d.c.y + s * (t.y - d.c.y) + amp * Math.cos(now / 820 + ph * 1.7)
+  const r = d.region
+  return { x: clamp(x, r.x, r.x + r.w), y: clamp(y, r.y, r.y + r.h) }
+}
+
 interface Burst {
   along: string
   n: number
@@ -163,6 +209,7 @@ export class Engine {
   /** 흰 종이 위에 그릴 때 true (PDF 편집기). 어두운 칠판이면 false */
   paper = false
   bursts: Burst[] = []
+  diffusions: Diffusion[] = []
   /** 보낸 패킷 수 기록 (AI가 두 배·절반을 이어서 계산하게) */
   sent: { along: string; n: number; drop: number; ack: boolean; rev: boolean }[] = []
   private tweens: Tween[] = []
@@ -189,6 +236,7 @@ export class Engine {
     this.spawned = {}
     this.flows = []
     this.bursts = []
+    this.diffusions = []
     this.sent = []
     this.tweens = []
     this.frozen.clear()
@@ -268,7 +316,28 @@ export class Engine {
       this.takenOver.delete(id)
       this.flows = this.flows.filter((f) => f.along !== id)
       this.bursts = this.bursts.filter((f) => f.along !== id)
+      this.diffusions = this.diffusions.filter((d) => d.in !== id)
     }
+  }
+
+  /** 그 용기 안 입자가 지금 퍼진 정도 (확산 중이 아니면 undefined) */
+  spreadOf(id: string): number | undefined {
+    const d = this.diffusions.find((x) => x.in === id)
+    return d ? diffusionSpread(d, this.clock) : undefined
+  }
+
+  /** 확산 영역: 상자 안쪽. 상자를 가로지르는 수면선이 있으면 그 아래 (실측 092126: 비커에 수면을 긋고 잉크를 떨어뜨림) */
+  diffusionRegion(id: string): Box | null {
+    const o = this.board.get(id)
+    if (!o) return null
+    const b = o.bbox
+    const pad = Math.min(12, b.w / 8, b.h / 8)
+    let top = b.y + pad
+    const surface = this.board.objs.find((x) => x.id !== id && x.kind === 'line' && x.bbox.w > 0.5 * b.w && x.bbox.h < 30
+      && x.bbox.x + x.bbox.w / 2 > b.x && x.bbox.x + x.bbox.w / 2 < b.x + b.w
+      && x.bbox.y + x.bbox.h / 2 > b.y + 10 && x.bbox.y + x.bbox.h / 2 < b.y + 0.8 * b.h)
+    if (surface) top = surface.bbox.y + surface.bbox.h + 8
+    return { x: b.x + pad, y: top, w: b.w - 2 * pad, h: b.y + b.h - pad - top }
   }
 
   private A(id: string): AnimState {
@@ -359,6 +428,7 @@ export class Engine {
     for (const op of ops) {
       if ('id' in op && op.id && !positions.has(op.id)) return `없는 객체: ${op.id}`
       if ((op.v === 'flow' || op.v === 'send') && !this.isPath(op.along) && !newPaths.has(op.along)) return '연결 경로가 아닌 선'
+      if (op.v === 'diffuse' && !this.diffusionRegion(op.in)) return `없는 용기: ${op.in}`
       if (op.v === 'rotate' && typeof op.about === 'string' && !positions.has(op.about)) return `없는 객체: ${op.about}`
       if (op.v !== 'move') continue
       if (moved.has(op.id)) return `한 단계에 같은 객체를 두 번 이동: ${op.id}`
@@ -517,6 +587,32 @@ export class Engine {
         if (this.sent.length > 8) this.sent.shift()
         return travel + gap * (op.n - 1) + (op.drop ? DROP_FALL * 0.5 : 0)
       }
+      case 'diffuse': {
+        const region = this.diffusionRegion(op.in)
+        if (!region) return 0
+        const old = this.diffusions.find((d) => d.in === op.in)
+        if (old) {
+          old.from = diffusionSpread(old, now)
+          old.to = op.spread
+          old.t0 = now
+          old.dur = op.dur
+          return op.dur
+        }
+        // 시작점: 준 자리(그린 잉크 방울 등), 없으면 용기(네모) 정가운데. 영역 안으로 당긴다
+        const mid = boxCenter(this.board.get(op.in)!.bbox)
+        const want = op.at ? { x: op.at[0], y: op.at[1] } : mid
+        const c = { x: clamp(want.x, region.x + 0.15 * region.w, region.x + 0.85 * region.w), y: clamp(want.y, region.y + 0.1 * region.h, region.y + 0.9 * region.h) }
+        const rnd = seeded(op.n * 7919 + Math.round(region.x) * 31 + Math.round(region.y))
+        const targets = Array.from({ length: op.n }, () => ({ x: region.x + rnd() * region.w, y: region.y + rnd() * region.h }))
+        this.diffusions.push({ in: op.in, region, c, targets, color: op.color, from: 0, to: op.spread, t0: now, dur: op.dur })
+        // 용기 안 화살표를 따라 흐르던 입자는 확산 입자로 바꾼다 (실측 110521: 화살표마다 흐름이 따로 돎)
+        const inside = (p: Pt) => p.x > region.x - 10 && p.x < region.x + region.w + 10 && p.y > region.y - 40 && p.y < region.y + region.h + 10
+        this.flows = this.flows.filter((f) => {
+          const pts = this.linePts(f.along)
+          return !pts || !inside(pts[Math.floor(pts.length / 2)])
+        })
+        return op.dur
+      }
       case 'stop':
         if (op.along) this.bursts = this.bursts.filter((f) => f.along !== op.along)
         if (op.along) this.flows = this.flows.filter((f) => f.along !== op.along)
@@ -659,7 +755,7 @@ export class Engine {
           if (a.rot) this.tween((v) => (a.rot = v), a.rot, Math.round(a.rot / (2 * Math.PI)) * 2 * Math.PI, op.dur, now, `${id}:rot`)
           if (a.sc !== 1) this.tween((v) => (a.sc = v), a.sc, 1, op.dur, now)
         }
-        if (!op.id) { this.flows = []; this.bursts = [] }
+        if (!op.id) { this.flows = []; this.bursts = []; this.diffusions = [] }
         else this.flows = this.flows.filter((f) => f.along !== op.id)
         return op.dur
       }
@@ -802,6 +898,19 @@ export class Engine {
         c.fill()
       }
     }
+    for (const d of this.diffusions) {
+      c.fillStyle = this.col(d.color)
+      const born = clamp((this.clock - d.t0) / 300, 0, 1)
+      c.save()
+      if (d.from === 0) c.globalAlpha = born
+      for (let i = 0; i < d.targets.length; i++) {
+        const q = diffusionPoint(d, i, this.clock)
+        c.beginPath()
+        c.arc(q.x, q.y, 4, 0, Math.PI * 2)
+        c.fill()
+      }
+      c.restore()
+    }
     for (const b of this.bursts) {
       const line = this.linePts(b.along)
       if (!line) continue
@@ -925,6 +1034,8 @@ export class Engine {
     const out: string[] = []
     if (this.flows.length)
       out.push('흐르는 중: ' + this.flows.map((f) => `${f.along}(입자 ${f.n}, 빠르기 ${f.speed}${f.rev ? ', 반대 방향' : ''})`).join(', '))
+    if (this.diffusions.length)
+      out.push('퍼지는 중: ' + this.diffusions.map((d) => `${d.in} 안 입자 ${d.targets.length}개(퍼진 정도 ${Math.round(diffusionSpread(d, this.clock) * 100)}%)`).join(', '))
     if (this.sent.length) {
       const last = this.sent.filter((x) => !x.ack).at(-1)
       out.push(`보낸 패킷(오래된→최근): ${this.sent.map((x) => `${x.along} ${x.ack ? '응답 ' : ''}${x.n}개${x.drop ? `(${x.drop}개 버려짐)` : ''}`).join(' → ')}${last ? `. 직전에 보낸 데이터 패킷 수: ${last.n}` : ''}`)

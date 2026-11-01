@@ -377,13 +377,21 @@ export class Board {
       if (x < h.bbox.x - pad || x > h.bbox.x + h.bbox.w + pad || y < v.bbox.y - pad || y > v.bbox.y + v.bbox.h + pad) return null
       return { u: (x - h.bbox.x) / h.bbox.w, v: (y - v.bbox.y) / v.bbox.h }
     }
+    // 글자 없이 머리만 단 L자 축: 왼쪽 아래 모서리에서 만나고, 둘 다 화살표이고, 그 사이에 곡선을 그렸다
+    // (실측 104903: 수요·공급 그래프의 x·y축을 축으로 못 알아봐 AI가 x축을 수요 곡선 대신 옮김)
+    const plottedL = (h: BoardObj, v: BoardObj, c: { u: number; v: number }) => {
+      if (!h.arrowEnd || !v.arrowEnd || c.u > 0.3 || c.v < 0.7) return false
+      const x0 = v.bbox.x + v.bbox.w / 2, y0 = h.bbox.y + h.bbox.h / 2
+      return this.objs.some((o) => o.id !== h.id && o.id !== v.id && o.kind === 'line' && Math.max(o.bbox.w, o.bbox.h) > 60
+        && o.bbox.x + o.bbox.w / 2 > x0 && o.bbox.x + o.bbox.w / 2 < h.bbox.x + h.bbox.w && o.bbox.y + o.bbox.h / 2 < y0 && o.bbox.y + o.bbox.h / 2 > v.bbox.y)
+    }
     const labelled = (o: BoardObj) => this.objs.some((x) => x.id !== o.id && this.axisLabel(x) && ends(o).some((p) => inBox(p, x.bbox, 70))) || this.axisLabel(o)
     for (const h of hs) for (const v of vs) {
       const c = at(h, v)
       if (!c) continue
       if (hs.filter((x) => at(x, v)).length > 1 || vs.filter((x) => at(h, x)).length > 1) continue
       const cross = c.u > 0.25 && c.u < 0.75 && c.v > 0.25 && c.v < 0.75
-      if (cross || labelled(h) || labelled(v)) out.add(h.id).add(v.id)
+      if (cross || labelled(h) || labelled(v) || plottedL(h, v, c)) out.add(h.id).add(v.id)
     }
     return out
   }

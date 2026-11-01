@@ -18,6 +18,7 @@ export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 �
  {"v":"flow","along":"선id","n":1~20,"speed":0.3~3,"color":"색","rev":false}  선을 따라 입자가 계속 흐름(stop 전까지). rev=true면 그린 방향의 반대로
  {"v":"send","along":"선id","n":1~16,"color":"색","rev":false,"drop":0,"at":"객체id","ack":false}  선을 따라 패킷 n개를 한 줄로 한 번만 보낸다(지나가면 사라짐, 개수가 보인다). drop=그중 뒤쪽 몇 개가 at(버퍼·라우터) 자리에서 넘쳐 버려짐(빨갛게 떨어짐). ack:true=응답 패킷(작은 초록 점). 같은 선에 흐르던 입자는 멈춘다
  {"v":"stop","along":"선id"} 또는 {"v":"stop","id":"객체id"}  흐름이나 계속 도는 이동을 멈춤
+ {"v":"diffuse","in":"용기(상자)id","spread":0~1,"n":입자 수,"color":"색","at":[x,y](없으면 용기 가운데)}  확산: 용기 안에서 입자가 한 점에서 퍼진다. spread 0.1=막 떨어뜨린 방울, 0.5=사방으로 퍼지는 중, 1=용기 전체에 고르게. 같은 용기에 다시 쓰면 이어서 퍼진다
  {"v":"spawn","id":"p로 시작하는 새 id","shape":"dot|circle|box|label","at":[x,y] 또는 "on":"객체id","text":"label 글자","color":"색","r":반지름,"w":폭,"h":높이}
  {"v":"move","id":"객체id","to":[x,y](객체 중심이 갈 자리) 또는 "to":"객체id"(그 객체가 있는 자리) 또는 "along":"선id" 또는 "by":[dx,dy](지금 자리에서 이만큼 밀기),"dur":ms}  자리 이동은 이것 하나로. "along"과 함께 "loop":true면 stop 전까지 그 경로를 계속 돈다(닫힌 경로는 회전, 열린 경로는 왕복)
  {"v":"spawn","id":"p…","shape":"arrow","from":"객체id"또는[x,y],"to":"객체id"또는[x,y],"text":"이름","color":"색"}  그리지 않은 관계·이동을 화살표로 보충. 만든 화살표는 flow·move의 along으로 쓸 수 있다
@@ -51,6 +52,7 @@ export const SYSTEM_PROMPT = `너는 '살아있는 칠판'의 실시간 해석 �
 - 공전·순환처럼 경로를 따라 계속 도는 운동은 그 궤도 선을 along으로 loop:true. 움직이는 것은 궤도 위에 그린 객체(지구 등)이고, 궤도 가운데 객체(태양 등)는 돌리지 않는다. 제자리 rotate는 "자전"이라고 말했을 때만. 궤도가 안 그려졌으면 spawn arrow로 경로를 만들지 않고 강조만 한다.
 - 자전(제자리에서 도는 것)은 그 객체를 rotate loop:true deg:360. 공전과 자전을 같이 말하면 한 단계에 move along loop와 rotate를 함께 쓴다.
 - 진자·시계추·그네처럼 매달려 왔다 갔다 하는 것은 rotate loop:true, deg 20~35, about은 매단 점(줄의 위쪽 끝 좌표). 줄과 추가 따로 그려졌으면 둘 다 같은 about으로 rotate한다. 진자를 따라 그린 호(화살표)는 움직이지 않는다.
+- 잉크·향기처럼 퍼지는 것(확산)은 flow나 점 spawn 대신 diffuse. 화살표·수면선을 따라 흐르게 하지 않는다.
 - 떨어지는 물체(공·사과)는 땅·바닥 쪽으로 충분히 move한다(by의 dy를 물체 높이의 2배 이상, 바닥선이 있으면 그 위까지). 포물선 궤적 화살표가 있으면 그 화살표를 along으로 쓴다.
 - "다시 돌아와/원래대로/되돌려"는 restore. 움직인 그 객체만 되돌리려면 id를 쓴다.
 - 몇 개를 보내는지가 중요한 설명(TCP 혼잡 제어·슬로 스타트 등)은 flow 대신 send. 경로는 보내는 쪽→받는 쪽 화살표(연결선). 개수는 말한 수:
@@ -103,7 +105,8 @@ function sceneTag(o: BoardObj) {
 
 function describeObjs(board: Board, engine: Engine) {
   const axes = board.axes()
-  const lines = board.objs.map((o) => describeObj(board, engine, o, axes) + sceneTag(o))
+  // 축에는 장면 해석 이름표를 붙이지 않는다 (실측 104903: 앞 수업의 '온도 증가'가 x축에 남아 그래프 대신 축을 옮김)
+  const lines = board.objs.map((o) => describeObj(board, engine, o, axes) + (axes.has(o.id) ? '' : sceneTag(o)))
   return describeList(board, engine, lines)
 }
 

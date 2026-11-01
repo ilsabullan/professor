@@ -1,4 +1,4 @@
-import type { Board } from './board'
+import type { Board, BoardObj } from './board'
 import type { Op } from './ops'
 import type { Engine } from './engine'
 import { distToSegment } from './geometry'
@@ -370,6 +370,8 @@ export function alongToShift(ops: Op[], board: Board, engine: Engine, now: numbe
     const self = board.get(op.id)
     const at = engine.settled(op.id)
     if (!path || !self || !at || path.kind !== 'line' || !path.pts) return op
+    // 장면 해석이 이 객체에서 출발한다고 본 화살표는 그 궤적을 따라간다 (실측 092801: 공에서 시작한 포물선 화살표)
+    if (path.from === op.id) return op
     let by: [number, number] | null = null
     if (axes.has(path.id)) {
       const recent = arrows.find((o) => o.id !== op.id && now - o.t < 120000)
@@ -389,12 +391,97 @@ export function alongToShift(ops: Op[], board: Board, engine: Engine, now: numbe
   })
 }
 
+/**
+ * 좌표축은 옮기지 않는다. 곡선·그래프를 말했으면 그 곡선을 대신 민다: 수요는 오른쪽 아래로, 공급은 오른쪽 위로 향하는 선.
+ * 고를 곡선이 없거나 선을 말하지 않았으면 축 이동은 버린다.
+ * 실측 104903: "수요가 오른쪽으로 옮겨 가요"에 x축을 밀고, "균형점이 위로 올라가서"에 x축을 위로 올렸다.
+ */
+export function keepAxesStill(ops: Op[], text: string, board: Board): Op[] {
+  const axes = board.axes()
+  if (!ops.some((op) => op.v === 'move' && axes.has(op.id))) return ops
+  const curves = board.objs.filter((o) => o.kind === 'line' && o.pts && o.pts.length > 2 && !axes.has(o.id) && !board.underlineOf(o.id) && Math.max(o.bbox.w, o.bbox.h) > 60)
+  // 화면 좌표에서 오른쪽으로 갈수록 내려가면(+) 수요, 올라가면(-) 공급
+  const slope = (o: BoardObj) => {
+    const [a, z] = [o.pts![0], o.pts![o.pts!.length - 1]]
+    return Math.sign((z.x - a.x) * (z.y - a.y))
+  }
+  const pick = () => {
+    if (!LINE_WORD.test(text)) return undefined
+    // "수요와 공급이 만나는 점이… 수요가 오른쪽으로 옮겨 가요"처럼 둘 다 나오면 마지막에 말한 쪽이 움직이는 것
+    const last = [...text.matchAll(/수요|공급/g)].at(-1)?.[0]
+    const want = last === '수요' ? 1 : last === '공급' ? -1 : 0
+    const found = want ? curves.filter((o) => slope(o) === want) : curves
+    return found.length === 1 ? found[0].id : undefined
+  }
+  const target = pick()
+  const moved = new Set(ops.filter((op) => op.v === 'move').map((op) => (op as { id: string }).id))
+  return ops.flatMap((op) => {
+    if (op.v !== 'move' || !axes.has(op.id)) return [op]
+    return target && !moved.has(target) ? [{ ...op, id: target }] : []
+  })
+}
+
+/**
+ * 그린 화살표가 객체에서 출발해 목적지 근처에서 끝나면, 직선 이동 대신 그 화살표를 따라 옮긴다.
+ * 그 객체 자리에 새로 만든 점(대역)을 옮기려 했으면 그린 객체를 옮기고, 그린 화살표를 베낀 새 화살표는 만들지 않는다.
+ * 실측 092801: "이렇게 휘면서 떨어져요"에 공 자리에 점을 새로 찍어 포물선 화살표 끝까지 직선으로 옮김
+ */
+export function followDrawnArrow(ops: Op[], board: Board, engine: Engine): Op[] {
+  const axes = board.axes()
+  const arrows = board.objs.filter((o) => o.kind === 'line' && o.pts && o.pts.length > 2 && !axes.has(o.id) && !board.underlineOf(o.id)
+    && (o.arrowEnd || o.role === 'arrow'))
+  if (!arrows.length) return ops
+  const head = (o: BoardObj) => (o.arrowEnd === 'start' ? o.pts![0] : o.pts![o.pts!.length - 1])
+  const tail = (o: BoardObj) => (o.arrowEnd === 'start' ? o.pts![o.pts!.length - 1] : o.pts![0])
+  const near = (p: { x: number; y: number }, q: { x: number; y: number }, r: number) => Math.hypot(p.x - q.x, p.y - q.y) < r
+  const inBox = (p: { x: number; y: number }, b: { x: number; y: number; w: number; h: number }, pad: number) =>
+    p.x > b.x - pad && p.x < b.x + b.w + pad && p.y > b.y - pad && p.y < b.y + b.h + pad
+  const spawns = new Map(ops.flatMap((op) => (op.v === 'spawn' ? [[op.id, op] as const] : [])))
+  // 대역 점 → 그 점을 찍은 자리의 그린 객체
+  const standIn = (id: string) => {
+    const sp = spawns.get(id)
+    if (!sp || sp.shape !== 'dot' || !sp.at) return undefined
+    const p = { x: sp.at[0], y: sp.at[1] }
+    return board.objs.find((o) => o.kind !== 'line' && inBox(p, o.bbox, 10))?.id
+  }
+  const replaced = new Map<string, string>()
+  const used = new Set<string>()
+  const out: Op[] = []
+  for (const op of ops) {
+    if (op.v !== 'move' || op.along || op.loop || (!op.to && !op.by)) { out.push(op); continue }
+    const id = standIn(op.id) ?? op.id
+    const from = engine.settled(id) ?? (spawns.get(op.id)?.at ? { x: spawns.get(op.id)!.at![0], y: spawns.get(op.id)!.at![1] } : undefined)
+    const to = op.by && from ? { x: from.x + op.by[0], y: from.y + op.by[1] } : Array.isArray(op.to) ? { x: op.to[0], y: op.to[1] } : typeof op.to === 'string' ? engine.settled(op.to) : undefined
+    const self = board.get(id)
+    if (!from || !to) { out.push(op); continue }
+    const arrow = arrows.find((a) => {
+      const len = Math.hypot(a.bbox.w, a.bbox.h)
+      const starts = a.from === id || (self ? inBox(tail(a), self.bbox, 40) : near(tail(a), from, 50))
+      return starts && near(head(a), to, Math.max(80, 0.3 * len))
+    })
+    if (!arrow) { out.push(op); continue }
+    if (id !== op.id) replaced.set(op.id, id)
+    used.add(arrow.id)
+    out.push({ v: 'move', id, along: arrow.id, dur: Math.max(op.dur, 1200) })
+  }
+  if (!used.size) return ops
+  const copies = (op: Op) => op.v === 'spawn' && op.shape === 'arrow' && [...used].some((aid) => {
+    const a = board.get(aid)!
+    const pt = (v: typeof op.from) => (Array.isArray(v) ? { x: v[0], y: v[1] } : typeof v === 'string' ? engine.settled(v) : undefined)
+    const [f, t] = [pt(op.from), pt(op.to)]
+    return !!f && !!t && near(t, head(a), 80) && (near(f, tail(a), 80) || inBox(f, board.get(a.from ?? '')?.bbox ?? a.bbox, 40))
+  })
+  return out.filter((op) => !(op.v === 'spawn' && replaced.has(op.id)) && !copies(op))
+    .map((op) => ('id' in op && op.id && replaced.has(op.id) && op.v !== 'move' ? { ...op, id: replaced.get(op.id)! } : op) as Op)
+}
+
 /** AI 응답을 실행 전에 바로잡는 규칙들 (확정 발화에만) */
 export function repairOps(ops: Op[], text: string, board: Board, engine: Engine, now: number): Op[] {
-  let out = alignDirection(alongToShift(ops, board, engine, now), text)
+  let out = alignDirection(alongToShift(followDrawnArrow(ops, board, engine), board, engine, now), text)
   out = measureTranslation(out, text, board, now)
   out = repairOrbit(out, text, board)
   out = repairPendulum(out, board)
+  out = keepAxesStill(out, text, board)
   return followIntersections(out, text, board, engine)
 }
 
@@ -560,6 +647,42 @@ export function keepGrounded(ops: Op[], g: Grounding, board: Board, mode: GateMo
     || (kept.every(minor) && dropped.some((op) => !minor(op)))
   if (!kept.length || lost || rejectUngrounded(kept, g, board, mode)) return { ops: [], dropped: ops, reason }
   return { ops: kept, dropped, reason }
+}
+
+/** 확산 수업의 말 */
+const DIFFUSE_TOPIC = /잉크|입자|확산|방울|냄새|향수|분자|색소|물감/
+const DIFFUSE_EVEN = /고르게|골고루|균일|섞[여이]|전체[에로]?\s*(?:다\s*)?(?:퍼|번)/
+const DIFFUSE_OUT = /사방|퍼져|퍼지|퍼진|퍼뜨|번져|번지/
+const DIFFUSE_DROP = /떨어[뜨트]|방울|넣[어으]/
+const CONTAINER = /비커|컵|용기|수조|물|병|그릇|통/
+
+/**
+ * 확산: 잉크를 떨어뜨리면 용기 가운데에 모이고, "사방으로 퍼져요"에 절반쯤, "고르게 퍼지죠"에 용기 전체로 퍼진다. 모델 없이 정한다.
+ * 실측 092126: 잉크를 비커 가장자리(수면 끝)에 찍고 수면선을 따라 흐르게 함 → "네모 정중앙에 떨어뜨려 거기서 퍼져야"
+ * 실측 110521: "비커 전체에 고르게 퍼지죠"에 화살표 흐름만 다시 켬 → "입자들을 비커 안에 마구 흩뿌려야"
+ */
+export function planDiffusion(board: Board, engine: Engine, g: Grounding): { ops: Op[]; cap: string } | null {
+  if (g.phase !== 'final' || NEGATED.test(g.text)) return null
+  const going = engine.diffusions[0]
+  if (!going && !DIFFUSE_TOPIC.test(g.text)) return null
+  const level = DIFFUSE_EVEN.test(g.text) ? 1 : DIFFUSE_OUT.test(g.text) ? 0.5 : DIFFUSE_DROP.test(g.text) ? 0.1 : 0
+  if (!level) return null
+  const area = (o: BoardObj) => o.bbox.w * o.bbox.h
+  const boxes = board.objs.filter((o) => (o.kind === 'box' || o.role === 'box') && o.bbox.w > 80 && o.bbox.h > 80)
+  const box = going ? board.get(going.in) : boxes.find((o) => CONTAINER.test(o.label ?? '')) ?? boxes.sort((a, b) => area(b) - area(a))[0]
+  if (!box) return null
+  const now = engine.spreadOf(box.id)
+  if (now !== undefined && now >= level - 0.01) return null
+  // 교수자가 잉크 방울을 그렸으면 거기서, 아니면 용기 정가운데에서 퍼진다
+  const drop = board.objs.find((o) => o.id !== box.id && /잉크|방울/.test(o.label ?? '')
+    && o.bbox.x + o.bbox.w / 2 > box.bbox.x && o.bbox.x + o.bbox.w / 2 < box.bbox.x + box.bbox.w
+    && o.bbox.y + o.bbox.h / 2 > box.bbox.y && o.bbox.y + o.bbox.h / 2 < box.bbox.y + box.bbox.h)
+  const op: Op = {
+    v: 'diffuse', in: box.id, spread: level, n: 30, color: '#6ea8ff',
+    ...(drop ? { at: [Math.round(drop.bbox.x + drop.bbox.w / 2), Math.round(drop.bbox.y + drop.bbox.h / 2)] as [number, number] } : {}),
+    dur: level === 1 ? 4000 : level === 0.5 ? 2500 : 800,
+  }
+  return { ops: [op], cap: level === 1 ? '용기 전체에 고르게 퍼짐' : level === 0.5 ? '입자가 사방으로 퍼져 나감' : '잉크 한 방울' }
 }
 
 /** 명시적인 전체 정렬 요청에서만 사용. 값이 불명확하거나 여러 행이면 모델에 맡긴다. */
