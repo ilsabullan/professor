@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, alongToShift, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -564,5 +564,19 @@ describe('05:04 실측: 한 획으로 그린 화살표', () => {
       const tip = obj.pts![obj.pts!.length - 1]
       expect(Math.hypot(tip.x - start.x, tip.y - start.y)).toBeCloseTo(Math.max(...all.map((p) => Math.hypot(p.x - start.x, p.y - start.y))), 0)
     }
+  })
+})
+
+describe('05:04 실측: 포물선을 화살표·축을 "따라" 옮긴 응답', () => {
+  const c = fixture('real-parabola-050449')
+
+  it('위에 있지 않은 화살표를 따라가지 않고 화살표 시작→머리 끝만큼 평행이동한다 (n=210 응답)', () => {
+    const b = boardAt(c, 210)
+    const id = realIds(c, b, 210)
+    const e = new Engine(b, () => {})
+    const [op] = alongToShift(remapOps(opsOf('{"ops":[{"v":"move","id":"o4","along":"o5","dur":900}],"cap":"x"}'), id), b, e, 1e12) as { v: string; by?: [number, number] }[]
+    expect(op.v).toBe('move')
+    expect(op.by![0]).toBeGreaterThan(150) // 오른쪽으로 화살표 길이(약 194px)
+    expect(Math.abs(op.by![1])).toBeLessThan(10) // y로 내려가지 않음
   })
 })

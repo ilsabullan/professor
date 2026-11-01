@@ -182,11 +182,11 @@ export function oneStrokeArrow(pts: Pt[], s = 1): Pt[] | null {
   if (straightness(shaft) < 0.85) return null
   const tail = pts.slice(k)
   const far = Math.max(...tail.map((p) => dist(p, tip)))
-  if (pathLen(tail) < 0.4 * L || far < 0.15 * L || far > 0.9 * L) return null
+  if (far < 0.15 * L || far > 0.9 * L) return null
   // 머리 모양: 날개 하나를 곧게 긋거나, 날개를 긋고 머리 끝으로 돌아와 다른 날개를 긋는다.
   // 끝에 추(원)를 그린 진자는 원을 돌며 머리 끝으로 돌아오지 않는다 (실측 065948, 090717)
   const dt = tail.map((p) => dist(p, tip))
-  const back = dt.some((d, i) => d >= 0.5 * far && dt.slice(i + 1).some((e) => e <= 0.35 * far))
+  const back = pathLen(tail) >= 0.4 * L && dt.some((d, i) => d >= 0.5 * far && dt.slice(i + 1).some((e) => e <= 0.35 * far))
   // 머리 획은 머리 끝보다 뒤쪽(몸통 쪽)으로 꺾인다
   const ux = (tip.x - a.x) / L, uy = (tip.y - a.y) / L
   const behind = tail.slice(1).filter((p) => (p.x - tip.x) * ux + (p.y - tip.y) * uy < 0).length
@@ -194,12 +194,8 @@ export function oneStrokeArrow(pts: Pt[], s = 1): Pt[] | null {
   // 날개는 몸통 선에서 옆으로 벗어난다 (몸통을 되짚는 갈고리가 아님: 실측 043402)
   const side = (p: Pt) => Math.abs((p.x - tip.x) * uy - (p.y - tip.y) * ux)
   if (Math.max(...tail.map(side)) < 0.25 * far) return null
-  if (back) return shaft
-  // 날개 하나: 곧고, 몸통 쪽으로 60° 안쪽으로 꺾이고, 너무 짧은 몸통이 아니다
-  // (배열 테두리의 직각 모서리, 글자 획을 화살표로 보지 않는다: 실측 012918, 085717 "가")
-  const end = tail[tail.length - 1]
-  const cos = -((end.x - tip.x) * ux + (end.y - tip.y) * uy) / Math.max(1, dist(end, tip))
-  return far <= 0.6 * L && straightness(tail) >= 0.85 && cos >= 0.5 && L >= Math.max(55, 60 * s) ? shaft : null
+  // 날개 하나짜리는 천장 끝 갈고리·숫자 1과 모양이 같아 화살표로 보지 않는다 (실측 090717 천장, 064132 숫자)
+  return back ? shaft : null
 }
 
 /** 점이나 톡 찍은 짧은 획 (입자 표시). 표본 수가 적고 작다 */
