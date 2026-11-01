@@ -8,3 +8,4 @@ dist
 *.log
 logs
 .claude/launch.json
+*.tmp.test.ts
