@@ -189,6 +189,45 @@ export function repairOrbit(ops: Op[], text: string, board: Board): Op[] {
   })
 }
 
+/**
+ * 진자: 매단 점(실의 위쪽 끝)을 고정점으로 실과 추를 함께 흔든다.
+ * - AI가 준 기준점이 진자의 맨 위 끝에서 멀면 그 끝점으로 바로잡는다 (실측 090717: about [746,0], 페이지 맨 위를 축으로 흔듦)
+ * - 추만 흔들면 추에 닿아 위로 뻗은 실도 같은 고정점으로 함께 흔든다
+ * 위쪽 끝 근처에 가로선(천장)이 있으면 그 높이에 붙인다.
+ */
+export function repairPendulum(ops: Op[], board: Board): Op[] {
+  const swings = ops.filter((op): op is Extract<Op, { v: 'rotate' }> => op.v === 'rotate' && !!op.loop && Math.abs(op.deg) < 360 && !!board.get(op.id))
+  if (!swings.length) return ops
+  const ids = new Set(swings.map((op) => op.id))
+  const ptsOf = (id: string) => board.get(id)!.strokes.flatMap((st) => st.pts)
+  const top = (id: string) => ptsOf(id).reduce((a, b) => (b.y < a.y ? b : a))
+  // 추에 닿아 위로 뻗은 실 (같은 단계에서 이미 흔드는 객체는 빼고)
+  const strings = board.objs.filter((o) => {
+    if (ids.has(o.id) || o.kind !== 'line' || !o.pts || o.arrowEnd || board.underlineOf(o.id)) return false
+    const [a, z] = [o.pts[0], o.pts[o.pts.length - 1]]
+    const [low, high] = a.y > z.y ? [a, z] : [z, a]
+    if (low.y - high.y < 30) return false
+    return swings.some((op) => {
+      const b = board.get(op.id)!.bbox
+      return low.x > b.x - 25 && low.x < b.x + b.w + 25 && low.y > b.y - 25 && low.y < b.y + b.h + 25 && high.y < b.y
+    })
+  })
+  const parts = [...ids, ...strings.map((o) => o.id)]
+  let pivot: { x: number; y: number } = parts.map(top).reduce((a, b) => (b.y < a.y ? b : a))
+  const height = Math.max(...parts.map((id) => ptsOf(id).reduce((m, p) => Math.max(m, p.y), -Infinity))) - pivot.y
+  const ceiling = board.objs.find((o) => !parts.includes(o.id) && o.kind === 'line' && o.bbox.w > 3 * o.bbox.h && o.bbox.w > 60
+    && Math.abs(o.bbox.y + o.bbox.h / 2 - pivot.y) < 25 && pivot.x > o.bbox.x - 20 && pivot.x < o.bbox.x + o.bbox.w + 20)
+  if (ceiling) pivot = { x: pivot.x, y: ceiling.bbox.y + ceiling.bbox.h / 2 }
+  const at: [number, number] = [Math.round(pivot.x), Math.round(pivot.y)]
+  const far = (about: Extract<Op, { v: 'rotate' }>['about']) => {
+    if (!Array.isArray(about)) return true
+    return Math.hypot(about[0] - at[0], about[1] - at[1]) > Math.max(30, 0.15 * height)
+  }
+  const first = swings[0]
+  const out = ops.map((op) => op.v === 'rotate' && ids.has(op.id) && far(op.about) ? { ...op, about: at } : op)
+  return [...out, ...strings.map((o) => ({ v: 'rotate' as const, id: o.id, deg: first.deg, about: at, dur: first.dur, loop: true }))]
+}
+
 export function rejectUngrounded(ops: Op[], g: Grounding, board: Board, mode: GateMode = 'strict'): string | null {
   if (g.phase === 'test') return null
   const strict = mode === 'strict'
