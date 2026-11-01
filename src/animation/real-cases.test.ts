@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, groundSpeech, measureTranslation, repairOrbit, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -454,5 +454,29 @@ describe('08:46 실측: 태양 주위를 도는 지구', () => {
     const b = boardAt(c, 484)
     const ops = remapOps(opsOf(raw), realIds(c, b, 484))
     expect(repairOrbit(ops, '지구가 자전해요', b)[0].v).toBe('rotate')
+  })
+})
+
+describe('09:07 실측: 천장에 매단 진자', () => {
+  // logs 090717 n=542: "천장에 매달린 진자요 이 추는 여기 그려진 이 호를 왔다갔다해요"에 대한 응답 원문
+  const raw = '{"conf":0.85,"ops":[{"v":"rotate","id":"o26","deg":30,"about":[746,0],"dur":900,"loop":true}],"cap":"추가 진자처럼 왔다 갔다"}'
+
+  it('페이지 맨 위가 아니라 천장에 닿은 실의 위쪽 끝을 고정점으로 흔든다', () => {
+    const c = fixture('real-pendulum-090717')
+    const b = boardAt(c, 540)
+    const id = realIds(c, b, 540)
+    const ops = repairPendulum(remapOps(opsOf(raw), id), b)
+    expect(ops).toHaveLength(1)
+    const about = (ops[0] as { about: [number, number] }).about
+    expect(Math.abs(about[0] - 838)).toBeLessThan(6) // 실이 시작한 점 (838,341)
+    expect(Math.abs(about[1] - 340)).toBeLessThan(6) // 천장 높이
+    expect(new Engine(b, () => {}).validateStep(ops)).toBeNull()
+  })
+
+  it('이미 실 끝을 기준점으로 준 응답은 그대로 둔다', () => {
+    const c = fixture('real-pendulum-090717')
+    const b = boardAt(c, 540)
+    const ops = remapOps(opsOf(raw.replace('[746,0]', '[836,345]')), realIds(c, b, 540))
+    expect(repairPendulum(ops, b)).toEqual(ops)
   })
 })
