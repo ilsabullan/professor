@@ -5,7 +5,7 @@ import { Engine } from './engine'
 import { dropRevisits } from './geometry'
 import { parseProgress } from './ai/parse'
 import { quickFromBoard } from './quick'
-import { alignDirection, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
+import { alignDirection, followIntersections, groundSpeech, measureTranslation, repairOrbit, repairPendulum, keepGrounded, planNumericSort, rejectUngrounded } from './grounding'
 import { sanitizeOp, type Op } from './ops'
 import type { SceneResult } from './board'
 import { describeScene, parseScene, SCENE_PROMPT } from './scene'
@@ -478,5 +478,52 @@ describe('09:07 실측: 천장에 매단 진자', () => {
     const b = boardAt(c, 540)
     const ops = remapOps(opsOf(raw.replace('[746,0]', '[836,345]')), realIds(c, b, 540))
     expect(repairPendulum(ops, b)).toEqual(ops)
+  })
+})
+
+describe('08:57 실측: 궤도 자체를 돌린 응답', () => {
+  // logs 085717 n=155: 태양 o2, 궤도 타원 o3(상자), 지구 o4, 지구에 그린 자전축 o5
+  const raw = '{"conf":0.7,"ops":[{"v":"pulse","id":"o2"},{"v":"rotate","id":"o3","deg":360,"about":"o2","dur":4000,"loop":true}],"cap":"지구가 태양 주위를 돈다"}'
+  const text = '지구는 반대편으로 가도 죽은 같은 방향이에요 그래서 지구가 돌면서 여름에서 겨울로 바뀌어요'
+
+  it('궤도를 돌리지 않고 지구와 자전축을 함께 궤도를 따라 돌린다', () => {
+    const c = fixture('real-orbit-085717')
+    const b = boardAt(c, 153)
+    const id = realIds(c, b, 153)
+    const ops = repairOrbit(remapOps(opsOf(raw), id), text, b)
+    expect(ops.find((op) => op.v === 'rotate')).toBeUndefined()
+    const moved = ops.filter((op) => op.v === 'move').map((op) => op as { id: string; along: string; loop: boolean })
+    expect(moved.map((op) => op.id).sort()).toEqual([id('o4'), id('o5')].sort())
+    expect(moved.every((op) => op.along === id('o3') && op.loop)).toBe(true)
+    expect(keepGrounded(ops, groundSpeech(b, text, [], 'a', 'final'), b).ops.filter((op) => op.v === 'move')).toHaveLength(2)
+    expect(new Engine(b, () => {}).validateStep(ops)).toBeNull()
+  })
+})
+
+describe('09:07 실측: 수요가 오른쪽으로 옮겨 가면 균형점이 새 교점으로', () => {
+  // 수요 o21, 공급 o22, 교점에 쓴 E (o23, o24)
+  const c = fixture('real-pendulum-090717')
+
+  it('수요선을 민 만큼 E가 새 교점(위·오른쪽)으로 따라간다', () => {
+    const b = boardAt(c, 392)
+    const id = realIds(c, b, 392)
+    const e = new Engine(b, () => {})
+    // n=399 실행된 동작
+    const ops = followIntersections([{ v: 'move', id: id('o21'), by: [60, 0], dur: 700 }], '수요 그래프가 오른쪽으로 옮겨 가요 그러면 균형 점이', b, e)
+    const follow = ops.filter((op) => op.v === 'move' && op.id !== id('o21')) as { id: string; by: [number, number] }[]
+    expect(follow.map((op) => op.id).sort()).toEqual([id('o23'), id('o24')].sort())
+    for (const op of follow) {
+      expect(op.by[0]).toBeGreaterThan(15) // 오른쪽
+      expect(op.by[1]).toBeLessThan(-15) // 위 (가격 상승)
+    }
+    expect(e.validateStep(ops)).toBeNull()
+  })
+
+  it('"위로 올라가서 가격이 올라요"에 수요선을 위로 또 밀지 않는다 (n=408 응답)', () => {
+    const b = boardAt(c, 392)
+    const id = realIds(c, b, 392)
+    const e = new Engine(b, () => {})
+    const raw = remapOps(opsOf('{"ops":[{"v":"move","id":"o21","by":[0,-60],"dur":900},{"v":"pulse","id":"o24"}],"cap":"x"}'), id)
+    expect(followIntersections(raw, '위로 올라가서 가격이 올라요', b, e).map((op) => op.v)).toEqual(['pulse'])
   })
 })
