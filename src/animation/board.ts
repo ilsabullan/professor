@@ -165,6 +165,43 @@ function edgeShare(pts: Pt[], b: Box) {
  * 획 하나의 모양 판별.
  * 크기보다 "곧은가, 닫혔는가, 모서리가 있는가"를 본다. 크게 쓴 숫자도 구불구불하면 손글씨(mark).
  */
+/**
+ * 한 획 화살표: 시작점에서 가장 먼 점(머리 끝)까지 곧게 가고, 그 뒤로 머리 획이 끝 근처에서 뒤쪽으로 꺾여 이어진다.
+ * 돌려주는 값은 시작→머리 끝 몸통. 실측 050449: 확산 화살표를 한 획으로 그려 손글씨로 묶였고 흐름이 전혀 안 나왔다.
+ * 7·1·L처럼 가장 먼 점이 획 끝인 글씨는 머리 획이 없으므로 걸리지 않는다.
+ */
+export function oneStrokeArrow(pts: Pt[], s = 1): Pt[] | null {
+  if (pts.length < 8) return null
+  const a = pts[0]
+  let k = 0
+  for (let i = 1; i < pts.length; i++) if (dist(a, pts[i]) > dist(a, pts[k])) k = i
+  const tip = pts[k]
+  const L = dist(a, tip)
+  if (L < 45 * s || k < 3 || k > pts.length - 3) return null
+  const shaft = pts.slice(0, k + 1)
+  if (straightness(shaft) < 0.85) return null
+  const tail = pts.slice(k)
+  const far = Math.max(...tail.map((p) => dist(p, tip)))
+  if (pathLen(tail) < 0.4 * L || far < 0.15 * L || far > 0.9 * L) return null
+  // 머리 모양: 날개 하나를 곧게 긋거나, 날개를 긋고 머리 끝으로 돌아와 다른 날개를 긋는다.
+  // 끝에 추(원)를 그린 진자는 원을 돌며 머리 끝으로 돌아오지 않는다 (실측 065948, 090717)
+  const dt = tail.map((p) => dist(p, tip))
+  const back = dt.some((d, i) => d >= 0.5 * far && dt.slice(i + 1).some((e) => e <= 0.35 * far))
+  // 머리 획은 머리 끝보다 뒤쪽(몸통 쪽)으로 꺾인다
+  const ux = (tip.x - a.x) / L, uy = (tip.y - a.y) / L
+  const behind = tail.slice(1).filter((p) => (p.x - tip.x) * ux + (p.y - tip.y) * uy < 0).length
+  if (behind < 0.7 * (tail.length - 1)) return null
+  // 날개는 몸통 선에서 옆으로 벗어난다 (몸통을 되짚는 갈고리가 아님: 실측 043402)
+  const side = (p: Pt) => Math.abs((p.x - tip.x) * uy - (p.y - tip.y) * ux)
+  if (Math.max(...tail.map(side)) < 0.25 * far) return null
+  if (back) return shaft
+  // 날개 하나: 곧고, 몸통 쪽으로 60° 안쪽으로 꺾이고, 너무 짧은 몸통이 아니다
+  // (배열 테두리의 직각 모서리, 글자 획을 화살표로 보지 않는다: 실측 012918, 085717 "가")
+  const end = tail[tail.length - 1]
+  const cos = -((end.x - tip.x) * ux + (end.y - tip.y) * uy) / Math.max(1, dist(end, tip))
+  return far <= 0.6 * L && straightness(tail) >= 0.85 && cos >= 0.5 && L >= Math.max(55, 60 * s) ? shaft : null
+}
+
 /** 점이나 톡 찍은 짧은 획 (입자 표시). 표본 수가 적고 작다 */
 function isTap(pts: Pt[], s = 1) {
   const b = bboxOf(pts)
@@ -489,6 +526,15 @@ export class Board {
     const b = bboxOf(pts)
     const diag = Math.hypot(b.w, b.h)
     const stroke: BoardStroke = { id: s.id, pts }
+
+    // ⓪ 펜을 떼지 않고 몸통과 머리를 한 획으로 그린 화살표
+    const one = oneStrokeArrow(pts, sc)
+    if (one) {
+      const o: BoardObj = { id: this.newId(), kind: 'line', strokes: [stroke], bbox: b, t, pts: simplify(one, 24), arrowEnd: 'end' }
+      this.objs.push(o)
+      const tip = one[one.length - 1]
+      return { kind: '화살표', desc: `화살표 ${o.id} 추가 (머리: (${Math.round(tip.x)},${Math.round(tip.y)}) 쪽으로 이동·인과)`, t, objId: o.id, rev: false }
+    }
 
     // ① 덧그리기: 이미 있는 선을 따라 다시 그음
     if (kind === 'line' && diag > 40) {

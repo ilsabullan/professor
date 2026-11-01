@@ -527,3 +527,42 @@ describe('09:07 실측: 수요가 오른쪽으로 옮겨 가면 균형점이 새
     expect(followIntersections(raw, '위로 올라가서 가격이 올라요', b, e).map((op) => op.v)).toEqual(['pulse'])
   })
 })
+
+describe('05:04 실측: 한 획으로 그린 화살표', () => {
+  // 화살표를 그은 순간의 칠판으로 본다 (나중에 지우거나 장면 해석이 바꿈)
+  const arrows = (name: string) => {
+    const b = new Board()
+    const out: { obj: NonNullable<ReturnType<Board['get']>>; quick: Op[]; path: boolean }[] = []
+    for (const e of fixture(name).events) {
+      const ev = b.apply(e)
+      if (ev?.kind !== '화살표' || !ev.desc.startsWith('화살표 o')) continue
+      const obj = b.get(ev.objId!)!
+      out.push({ obj: { ...obj, pts: [...obj.pts!] }, quick: quickFromBoard(ev, b), path: b.isFlowPath(obj.id) })
+    }
+    return out
+  }
+
+  it('확산 교안: 몸통과 머리를 한 획으로 그린 화살표를 화살표로 보고 바로 흐름을 붙인다 (반응 없음)', () => {
+    const got = arrows('real-diffusion-050449')
+    expect(got.length).toBeGreaterThanOrEqual(6)
+    for (const a of got) {
+      expect(a.obj).toMatchObject({ kind: 'line', arrowEnd: 'end' })
+      expect(a.quick.map((op) => op.v)).toEqual(['flow'])
+    }
+  })
+
+  it('광합성 교안: 나중에 그린 CO2·O2 화살표도 흐름 경로가 된다', () => {
+    const got = arrows('real-photo-050449')
+    expect(got.length).toBeGreaterThanOrEqual(1)
+    expect(got.every((a) => a.path)).toBe(true)
+  })
+
+  it('화살표의 경로는 머리 끝에서 끝나고 날개로 꺾이지 않는다', () => {
+    for (const { obj } of arrows('real-diffusion-050449')) {
+      const all = obj.strokes[0].pts
+      const start = all[0]
+      const tip = obj.pts![obj.pts!.length - 1]
+      expect(Math.hypot(tip.x - start.x, tip.y - start.y)).toBeCloseTo(Math.max(...all.map((p) => Math.hypot(p.x - start.x, p.y - start.y))), 0)
+    }
+  })
+})
