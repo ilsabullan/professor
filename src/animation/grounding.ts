@@ -329,9 +329,49 @@ export function followIntersections(ops: Op[], text: string, board: Board, engin
   return [...out.filter((op) => !(op.v === 'move' && followed.has(op.id))), ...follow]
 }
 
+/**
+ * 평행이동: 위에 있지 않은 화살표나 좌표축을 along으로 "따라" 옮기라는 응답은 경로가 아니라 변위다.
+ * 화살표면 시작→머리 끝, 축이면 최근 이동량 화살표를 그 축 방향으로 잘라 by로 바꾼다. 근거가 없으면 그대로 둔다.
+ * 실측 050449: 포물선을 화살표·x축을 따라 옮겨 화살표 날개 끝까지 내려가거나 축 길이만큼 날아감
+ */
+export function alongToShift(ops: Op[], board: Board, engine: Engine, now: number): Op[] {
+  const axes = board.axes()
+  const arrows = board.objs.filter((o) => o.kind === 'line' && o.arrowEnd && o.pts && !axes.has(o.id)).sort((a, b) => b.t - a.t)
+  // 꼬리→머리 끝. 머리 끝은 꼬리에서 가장 먼 점이다 (한 획 화살표는 마지막 점이 날개 끝)
+  const vec = (o: (typeof arrows)[number]) => {
+    const pts = o.strokes.length === 1 ? o.strokes[0].pts : o.pts!
+    const a = o.arrowEnd === 'start' ? o.pts![o.pts!.length - 1] : o.pts![0]
+    const z = pts.reduce((m, p) => (Math.hypot(p.x - a.x, p.y - a.y) > Math.hypot(m.x - a.x, m.y - a.y) ? p : m))
+    return { a, v: [z.x - a.x, z.y - a.y] as [number, number] }
+  }
+  return ops.map((op) => {
+    if (op.v !== 'move' || !op.along || op.loop || op.by || op.to) return op
+    const path = board.get(op.along)
+    const self = board.get(op.id)
+    const at = engine.settled(op.id)
+    if (!path || !self || !at || path.kind !== 'line' || !path.pts) return op
+    let by: [number, number] | null = null
+    if (axes.has(path.id)) {
+      const recent = arrows.find((o) => o.id !== op.id && now - o.t < 120000)
+      if (!recent) return op
+      const v = vec(recent).v
+      const [ax, ay] = [path.pts[path.pts.length - 1].x - path.pts[0].x, path.pts[path.pts.length - 1].y - path.pts[0].y]
+      by = Math.abs(ax) >= Math.abs(ay) ? [Math.round(v[0]), 0] : [0, Math.round(v[1])]
+    } else if (path.id !== op.id) {
+      // 객체가 화살표·선 위(시작점 근처)에 있으면 경로를 따라가는 것이 맞다.
+      // 머리를 따로 못 알아본 선은 그린 방향(시작→가장 먼 점)을 변위로 본다 (실측 050449 s5: 날개 하나짜리 화살표)
+      const { a, v } = vec(path)
+      if (Math.hypot(a.x - at.x, a.y - at.y) < Math.max(40, Math.min(self.bbox.w, self.bbox.h) / 4)) return op
+      by = [Math.round(v[0]), Math.round(v[1])]
+    }
+    if (!by || Math.hypot(...by) < 20) return op
+    return { v: 'move', id: op.id, by, dur: op.dur }
+  })
+}
+
 /** AI 응답을 실행 전에 바로잡는 규칙들 (확정 발화에만) */
 export function repairOps(ops: Op[], text: string, board: Board, engine: Engine, now: number): Op[] {
-  let out = alignDirection(ops, text)
+  let out = alignDirection(alongToShift(ops, board, engine, now), text)
   out = measureTranslation(out, text, board, now)
   out = repairOrbit(out, text, board)
   out = repairPendulum(out, board)
