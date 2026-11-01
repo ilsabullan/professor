@@ -48,6 +48,7 @@ interface Inflight {
   ctrl: AbortController
   /** 확정 발화 요청. 뒤이은 필기·미완성 발화가 취소하지 않는다 */
   final: boolean
+  grounding?: Grounding
 }
 
 /** 계기별로 AI를 부르기 전 기다리는 시간(ms). 짧을수록 빠르고, 연달아 오는 입력은 하나로 묶는다 */
@@ -422,13 +423,20 @@ export class Pipeline {
       this.firedRules.clear()
       return
     }
+    const grounding = this.speechGrounding(final, tEnd, 'final')
+    // 동작을 말한 요청은 동작 없는 다음 말이 취소하지 않는다. 그 말은 끝난 뒤 부른다
+    // (실측 081421: "x축을 따라 옮겨주세요" 직후 "아, 여튼 사진은 이렇게"가 이동 요청을 취소함)
+    const g0 = this.inflight?.final ? this.inflight.grounding : undefined
+    const idle = !grounding.move && !grounding.flow && !grounding.stop && !grounding.restore && !grounding.sort && !grounding.negated && !grounding.targets.length
+    const keep = !!g0 && (g0.move || g0.flow || g0.restore || g0.sort) && idle
     // 미완성 발화는 강조만 했다. 확정 발화는 한 개의 새로운 실행 단위다.
     clearTimeout(this.timer)
     this.pending = null
     this.deferred = null
-    this.abortInflight('중단(확정 발화)')
-    this.player.cancelPending()
-    const grounding = this.speechGrounding(final, tEnd, 'final')
+    if (!keep) {
+      this.abortInflight('중단(확정 발화)')
+      this.player.cancelPending()
+    }
     if (grounding.negated && grounding.targets.length === 2) this.heldPair = { key: [...grounding.targets].sort().join('|'), t: tEnd }
     if (/(비교|비유|더\s*크|더\s*작)/.test(final) || grounding.targets.length === 2) {
       const next = final.split(/그\s*다음(?:에)?/).at(-1)!
@@ -439,7 +447,9 @@ export class Pipeline {
     this.firedRules.clear()
     this.utter.push({ text: final, t: tEnd })
     if (this.utter.length > 30) this.utter.shift()
-    this.schedule({ kind: '말', desc: `발화: "${final}"`, t: tEnd, quickMs, grounding })
+    const trig: Trigger = { kind: '말', desc: `발화: "${final}"`, t: tEnd, quickMs, grounding }
+    if (keep) this.deferred = trig
+    else this.schedule(trig)
   }
 
   private speechGrounding(text: string, t: number, phase: 'preview' | 'final') {
@@ -508,7 +518,7 @@ export class Pipeline {
     this.reqs.push(rec)
     if (this.reqs.length > 300) this.reqs.shift()
     const ctrl = new AbortController()
-    const inf: Inflight = { rec, ctrl, final: trig.grounding?.phase === 'final' }
+    const inf: Inflight = { rec, ctrl, final: trig.grounding?.phase === 'final', grounding: trig.grounding }
     this.inflight = inf
     this.lastCallAt = performance.now()
 
