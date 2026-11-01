@@ -38,6 +38,12 @@ export function App({ pipeline, bus }: { pipeline: Pipeline; bus: InkBus }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // 데모: 강의를 열면 마이크를 바로 켠다 (끄는 것은 실험실의 마이크 버튼)
+  const inEditor = route.name === "editor";
+  useEffect(() => {
+    if (inEditor && pipeline.mic === "off") pipeline.speech.start();
+  }, [inEditor, pipeline]);
+
   const togglePanel = () => {
     setPanelOpen((open) => {
       try {

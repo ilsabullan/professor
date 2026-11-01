@@ -105,7 +105,7 @@ export class Pipeline {
   readonly speech: SpeechInput
   readonly scene: SceneParser
 
-  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true, stt: 'browser', gate: 'strict' }
+  settings: Settings = { model: 'claude-haiku-5-5', thinking: 'off', image: 'auto', early: true, quick: true, thr: 0.3, scene: true, stt: 'openai', gate: 'strict' }
   aiStatus: AiStatus = 'checking'
   aiNote = ''
   mic: MicState = 'off'
@@ -213,6 +213,8 @@ export class Pipeline {
       },
       onDiagnostic: (event, detail) => this.log('speech', { event, ...detail }),
     })
+    // 데모 기본: OpenAI 실시간 받아쓰기
+    this.speech.setProvider(this.settings.stt)
     bus.onInk((e) => this.handleInk(e))
     if (opts.headless) {
       this.aiStatus = 'ready'

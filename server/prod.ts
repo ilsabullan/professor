@@ -42,6 +42,7 @@ const TYPES: Record<string, string> = {
   '.bcmap': 'application/octet-stream',
   '.pfb': 'application/octet-stream',
   '.ttf': 'font/ttf',
+  '.pdf': 'application/pdf',
 }
 
 /** 받아쓰기 업체별 연결 대상과 키 헤더 */

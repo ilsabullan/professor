@@ -142,6 +142,12 @@ export class CloudSpeech {
     if (!this.wantOn) return this.release()
     const ctx = new AudioContext({ sampleRate: RATE[this.provider] })
     this.ctx = ctx
+    // 강의를 열 때 자동으로 켜면 사용자 동작 직후가 아닐 수 있어 멈춘 채 만들어진다. 다음 터치·클릭 때 깨운다
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+      const wake = () => { if (this.ctx === ctx && ctx.state === 'suspended') void ctx.resume() }
+      window.addEventListener('pointerdown', wake, { once: true })
+    }
     const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }))
     await ctx.audioWorklet.addModule(url)
     URL.revokeObjectURL(url)

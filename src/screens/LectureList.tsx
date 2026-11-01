@@ -7,8 +7,9 @@ import { uid } from "../lib/id";
 import { renameLecture, uniqueTitle } from "../lib/titles";
 import { Menu } from "../components/Menu";
 import { ConfirmDialog, PromptDialog } from "../components/Dialog";
+import { seedDemoLectures } from "../lib/demo";
 
-async function createLecture(file: File, existing: Lecture[]): Promise<Lecture> {
+export async function createLecture(file: File, existing: Lecture[], title?: string): Promise<Lecture> {
   const data = await file.arrayBuffer();
   const doc = await openPdf(data);
   try {
@@ -23,7 +24,7 @@ async function createLecture(file: File, existing: Lecture[]): Promise<Lecture> 
     const lecture: Lecture = {
       id: uid(),
       title: uniqueTitle(
-        `${existing.length + 1}차시`,
+        title ?? `${existing.length + 1}차시`,
         existing.map((l) => l.title),
       ),
       fileName: file.name,
@@ -59,7 +60,8 @@ export function LectureList({ onOpen }: { onOpen: (id: string) => void }) {
 
   const reload = () => listLectures().then(setLectures);
   useEffect(() => {
-    reload();
+    // 데모 강의 자료를 처음 한 번 넣어 두고 목록을 보여준다
+    seedDemoLectures((file, existing, title) => createLecture(file, existing, title)).finally(reload);
   }, []);
 
   const onFile = async (file: File | undefined) => {
