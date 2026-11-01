@@ -46,8 +46,8 @@ interface AnimState {
   /** 회전 각도(라디안, 시계 방향 +)와 회전축(페이지 좌표). 없으면 자기 중심 */
   rot?: number
   pivot?: Pt
-  /** 반복 회전: swing은 ±amp 왕복(진자), spin은 계속 회전(자전). stop id로 멈춘다 */
-  spin?: { mode: 'swing' | 'spin'; t0: number; period: number; amp: number }
+  /** 반복 회전: swing은 ±amp 왕복(진자), spin은 계속 회전(자전). stop id로 멈춘다. tilt는 그려진 자리가 수직에서 기운 각도(rad) */
+  spin?: { mode: 'swing' | 'spin'; t0: number; period: number; amp: number; tilt?: number }
 }
 
 /** 즉시 반응이 만든 효과(q…)는 AI에게 알리지 않는다. AI가 대상 객체로 착각하지 않게 */
@@ -136,6 +136,20 @@ const PAPER: Record<string, string> = {
   '#93a39b': '#6b7280',
   '#6ea8ff': '#1e5eff',
   '#ff5a46': '#e53935',
+}
+
+/**
+ * 진자 왕복 각도 (그려진 자리 기준 회전량). k는 경과 주기 수.
+ * tilt가 없으면 그려진 자리를 가운데로 ±amp. 있으면 수직 아래를 가운데로 흔들어, 비스듬히 그린 진자가
+ * 한쪽 끝에서 가운데까지만 오가지 않고 반대편 끝까지 간다. 진폭은 기운 각도 이상이라 시작할 때 튀지 않는다.
+ */
+export function swingAngle(amp: number, tilt: number | undefined, k: number): number {
+  if (!tilt) return amp * Math.sin(2 * Math.PI * k)
+  const A = Math.max(Math.abs(amp), Math.abs(tilt))
+  const r = clamp(tilt / A, -1, 1)
+  // 처음엔 수직 쪽으로 내려가게 위상을 고른다
+  const phase = tilt >= 0 ? Math.acos(r) : -Math.acos(r)
+  return A * Math.cos(2 * Math.PI * k + phase) - tilt
 }
 
 /**
@@ -618,7 +632,8 @@ export class Engine {
         this.tweens = this.tweens.filter((w) => w.owner !== `${op.id}:rot`)
         if (op.loop) {
           const spin = Math.abs(op.deg) >= 360
-          a.spin = { mode: spin ? 'spin' : 'swing', t0: now, period: op.dur, amp: spin ? Math.sign(rad) * 2 * Math.PI : rad }
+          const tilt = !spin && op.tilt ? (op.tilt * Math.PI) / 180 : undefined
+          a.spin = { mode: spin ? 'spin' : 'swing', t0: now, period: op.dur, amp: spin ? Math.sign(rad) * 2 * Math.PI : rad, ...(tilt ? { tilt } : {}) }
           a.rot = 0
           return Math.min(op.dur, 1200)
         }
@@ -705,7 +720,7 @@ export class Engine {
       if (a.pulse > 0) a.pulse = Math.max(0, a.pulse - dt * 1.2)
       if (a.spin) {
         const k = (now - a.spin.t0) / a.spin.period
-        a.rot = a.spin.mode === 'spin' ? a.spin.amp * (k % 1) : a.spin.amp * Math.sin(2 * Math.PI * k)
+        a.rot = a.spin.mode === 'spin' ? a.spin.amp * (k % 1) : swingAngle(a.spin.amp, a.spin.tilt, k)
       }
       if (a.path) {
         const raw = (now - a.path.t0) / a.path.dur

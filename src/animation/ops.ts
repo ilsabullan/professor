@@ -30,8 +30,9 @@ export type Op =
   /**
    * 기준점(about: 좌표 또는 객체 id, 없으면 자기 중심)을 축으로 돌림. deg는 도(시계 방향 +).
    * loop: |deg|<360이면 ±deg 왕복(진자), 360 이상이면 계속 회전(자전). stop id로 멈춘다
+   * tilt: 진자를 비스듬히 그렸을 때 수직 아래에서 기운 각도(도, 시계 방향 +). 있으면 그려진 자리에서 수직선 건너 반대편까지 흔든다 (AI가 아니라 보정 단계에서 채움)
    */
-  | { v: 'rotate'; id: string; deg: number; about?: [number, number] | string; dur: number; loop?: boolean }
+  | { v: 'rotate'; id: string; deg: number; about?: [number, number] | string; dur: number; loop?: boolean; tilt?: number }
   /** 움직이거나 돌린 객체를 처음 자리로 되돌림 (id 없으면 전부) */
   | { v: 'restore'; id?: string; dur: number }
   | { v: 'color'; id: string; color: string }

@@ -477,7 +477,24 @@ describe('09:07 실측: 천장에 매단 진자', () => {
     const c = fixture('real-pendulum-090717')
     const b = boardAt(c, 540)
     const ops = remapOps(opsOf(raw.replace('[746,0]', '[836,345]')), realIds(c, b, 540))
-    expect(repairPendulum(ops, b)).toEqual(ops)
+    const out = repairPendulum(ops, b) as Extract<Op, { v: 'rotate' }>[]
+    expect(out.map(({ tilt: _t, ...op }) => op)).toEqual(ops)
+  })
+
+  it('왼쪽으로 기울여 그린 진자는 수직선을 건너 오른쪽 끝까지 흔든다 (한쪽 끝과 가운데만 오가지 않게)', () => {
+    const c = fixture('real-pendulum-090717')
+    const b = boardAt(c, 540)
+    const ops = repairPendulum(remapOps(opsOf(raw), realIds(c, b, 540)), b) as Extract<Op, { v: 'rotate' }>[]
+    const tilt = ops[0].tilt!
+    expect(tilt).toBeGreaterThan(25) // 실이 (838,341)에서 왼쪽 아래 (746,446)로 내려감
+    expect(tilt).toBeLessThan(45)
+    const e = new Engine(b, () => {})
+    e.beginStep()
+    const id = ops[0].id
+    e.applyOp(ops[0], 0)
+    e.tick(450, .45) // 반 주기 (dur 900)
+    // 그린 자리(기울기 tilt)에서 반대편 대칭 자리(-tilt)까지 = 그려진 자리 기준 -2·tilt
+    expect((e.anim[id].rot! * 180) / Math.PI).toBeCloseTo(-2 * tilt, 0)
   })
 })
 

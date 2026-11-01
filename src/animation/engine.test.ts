@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Board } from './board'
-import { Engine, Player, type PlayStep } from './engine'
+import { Engine, Player, swingAngle, type PlayStep } from './engine'
 import { type Op, sanitizeOp } from './ops'
 
 /** 손글씨 두 개(o1 왼쪽, o2 오른쪽)를 둔 보드 */
@@ -275,6 +275,32 @@ describe('넘겨받은 필기의 모양', () => {
     expect(drawn.length).toBeGreaterThan(0)
     expect(new Set(drawn.map((d) => d.color))).toEqual(new Set(['#ffffff']))
     expect(new Set(drawn.map((d) => d.width))).toEqual(new Set([6]))
+  })
+})
+
+describe('진자 왕복 각도', () => {
+  const deg = (r: number) => (r * 180) / Math.PI
+  const rad = (d: number) => (d * Math.PI) / 180
+  it('기울기가 없으면 그린 자리를 가운데로 ±amp', () => {
+    expect(deg(swingAngle(rad(30), undefined, 0))).toBeCloseTo(0)
+    expect(deg(swingAngle(rad(30), undefined, .25))).toBeCloseTo(30)
+    expect(deg(swingAngle(rad(30), undefined, .75))).toBeCloseTo(-30)
+  })
+  it('비스듬히 그렸으면 그린 자리에서 출발해 수직선 건너 대칭 자리까지 간다', () => {
+    for (const tilt of [33, -33]) {
+      const at = (k: number) => deg(swingAngle(rad(30), rad(tilt), k)) + tilt // 수직 아래 기준 각도
+      expect(at(0)).toBeCloseTo(tilt) // 튀지 않고 그린 자리에서 시작
+      expect(at(.5)).toBeCloseTo(-tilt) // 반대편 끝
+      expect(at(.25)).toBeCloseTo(0) // 가운데(가장 낮은 점)를 지남
+      expect(Math.abs(at(.01))).toBeLessThan(Math.abs(tilt)) // 처음엔 아래로 내려감
+    }
+  })
+  it('AI 진폭이 기울기보다 크면 그 진폭으로 수직선 양쪽을 흔든다', () => {
+    const at = (k: number) => deg(swingAngle(rad(30), rad(10), k)) + 10
+    expect(at(0)).toBeCloseTo(10)
+    const range = Array.from({ length: 101 }, (_, i) => at(i / 100))
+    expect(Math.max(...range)).toBeCloseTo(30, 0)
+    expect(Math.min(...range)).toBeCloseTo(-30, 0)
   })
 })
 

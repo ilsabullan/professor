@@ -260,8 +260,28 @@ export function repairPendulum(ops: Op[], board: Board): Op[] {
     return Math.hypot(about[0] - at[0], about[1] - at[1]) > Math.max(30, 0.15 * height)
   }
   const first = swings[0]
-  const out = ops.map((op) => op.v === 'rotate' && ids.has(op.id) && far(op.about) ? { ...op, about: at } : op)
-  return [...out, ...strings.map((o) => ({ v: 'rotate' as const, id: o.id, deg: first.deg, about: at, dur: first.dur, loop: true }))]
+  const tilt = drawnTilt(parts.flatMap(ptsOf), at)
+  const withTilt = <T extends object>(op: T): T => (tilt ? { ...op, tilt } : op)
+  const out = ops.map((op) => op.v === 'rotate' && ids.has(op.id) ? withTilt(far(op.about) ? { ...op, about: at } : op) : op)
+  return [...out, ...strings.map((o) => withTilt({ v: 'rotate' as const, id: o.id, deg: first.deg, about: at, dur: first.dur, loop: true }))]
+}
+
+/**
+ * 진자를 비스듬히 그린 각도 (도, 수직 아래 0, 시계 방향 +). 거의 수직이면 undefined.
+ * 고정점 가까이(가장 먼 점까지 거리의 15~60%)의 점은 추가 아니라 실이라 그 방향의 중앙값을 쓴다.
+ * 실측 103554: 실을 왼쪽으로 33° 기울여 그렸더니 그 자리를 가운데로 ±30° 흔들어 한쪽 끝과 가운데만 오갔다.
+ */
+export function drawnTilt(pts: { x: number; y: number }[], [px, py]: [number, number]): number | undefined {
+  const far = pts.reduce((m, p) => Math.max(m, Math.hypot(p.x - px, p.y - py)), 0)
+  if (far < 30) return undefined
+  const angles = pts.filter((p) => {
+    const d = Math.hypot(p.x - px, p.y - py)
+    // 천장처럼 옆으로 뻗은 점은 뺀다
+    return d > 0.15 * far && d < 0.6 * far && p.y - py > 0.3 * d
+  }).map((p) => (Math.atan2(px - p.x, p.y - py) * 180) / Math.PI).sort((a, b) => a - b)
+  if (angles.length < 3) return undefined
+  const mid = angles[angles.length >> 1]
+  return Math.abs(mid) >= 6 ? Math.round(mid) : undefined
 }
 
 type P = { x: number; y: number }
